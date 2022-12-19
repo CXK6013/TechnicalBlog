@@ -270,6 +270,7 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 > JavaFX 的CSS基于W3C CSS 2.1版本，并从CSS 3版本添加了一些额外的内容。JavaFX CSS支持
 >
 >  This enables the mixing of CSS styles for JavaFX and for other purposes (such as for HTML pages) into a single style sheet. All JavaFX property names are prefixed with a vendor extension of ”`-fx-`”, including those that might seem to be compatible with standard HTML CSS, because some JavaFX values have slightly different semantics.
+> 这使得可以将JavaFX的CSS样式与其他用途（例如HTML页面）的CSS样式混合到单个样式表中。所有JavaFX属性名都带有一个“-fx-”的供应商扩展前缀，包括那些看起来与标准HTML CSS兼容的属性名，因为某些JavaFX值的语义略有不同。
 >
 > For more detailed information about JavaFX CSS, see the  Skinning JavaFX Applications with CSS document.
 >
