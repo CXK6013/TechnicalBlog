@@ -228,11 +228,11 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 >
 > This embedded browser component is composed of the following classes:
 >
->  集成的浏览器组件在鞋面这些类里
+>  集成的浏览器组件在下面这些类里
 >
 > - `WebEngine` provides basic web page browsing capability.
 >
-> ​     WebEngin提供笨笨的web页面浏览功能
+> ​     WebEngin提供基本的web页面浏览功能
 >
 > - `WebView` encapsulates a WebEngine object, incorporates HTML content into an application's scene, and provides fields and methods to apply effects and transformations. It is an extension of a `Node` class.
 >
@@ -267,22 +267,24 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 >
 > JavaFX CSS is based on the W3C CSS version 2.1 specifications, with some additions from current work on version 3. The JavaFX CSS support and extensions have been designed to allow JavaFX CSS style sheets to be parsed cleanly by any compliant CSS parser, even one that does not support JavaFX extensions.
 >
-> JavaFX 的CSS基于W3C CSS 2.1版本，并从CSS 3版本添加了一些额外的内容。JavaFX CSS支持
+> JavaFX 的CSS基于W3C CSS 2.1版本，并从CSS 3版本添加了一些额外的内容。JavaFX CSS提供了对标准CSS的扩展,任何符合CSS规范的解析器都可以解析这些扩展，即时这些解释器不支持JavaFX对CSS的扩展,符合标准的CSS解析器也能解析。
 >
 >  This enables the mixing of CSS styles for JavaFX and for other purposes (such as for HTML pages) into a single style sheet. All JavaFX property names are prefixed with a vendor extension of ”`-fx-`”, including those that might seem to be compatible with standard HTML CSS, because some JavaFX values have slightly different semantics.
-> 这使得可以将JavaFX的CSS样式与其他用途（例如HTML页面）的CSS样式混合到单个样式表中。所有JavaFX属性名都带有一个“-fx-”的供应商扩展前缀，包括那些看起来与标准HTML CSS兼容的属性名，因为某些JavaFX值的语义略有不同。
+> 我们可以将JavaFX的CSS样式和嵌入网页的样式放入一个CSS文件中。所有JavaFX的CSS样式属性名都会带有一个-fx-前缀,包括那些可能与标准HTML、CSS语义看起来相同的属性，因为他们在JavaFX有不同的语义。(比如字体大小,Web中用font-size,JavaFX用-fx-font-size来表示,原因在于JavaFX中的字体大小和Web中略有不同)
 >
 > For more detailed information about JavaFX CSS, see the  Skinning JavaFX Applications with CSS document.
+> 更多JavaFX相关的细节信息,参看Skinning JavaFX Applications with CSS document.这份文档,下面是地址。
 >
 > https://docs.oracle.com/javase/8/javafx/user-interface-tutorial/css_tutorial.htm#JFXUI733
 
 - UI Controls
 
 > The JavaFX UI controls available through the JavaFX API are built by using nodes in the scene graph. They can take full advantage of the visually rich features of the JavaFX platform and are portable across different platforms. JavaFX CSS allows for theming and skinning of the UI controls.
->
-> [Figure 2-3](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#CHDCDBCA) shows some of the UI controls that are currently supported. These controls reside in the `javafx.scene.control` package.
->
-> 
+
+JavaFX的控件可以用JavaFX API的在场景图中使用nodes来构建。可以充分利用JavaFx平台的丰富特性和跨平台。JavaFX CSS目前可以对UI控件的皮肤和主题进行设置。下面是示例
+
+> [Figure 2-3](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#CHDCDBCA) shows some of the UI controls that are currently supported. These controls reside in the `javafx.scene.control` package
+> 这些控件在javafx.scene.control这个包下面
 >
 > Figure 2-3 JavaFX UI Controls Sample
 >
@@ -290,38 +292,51 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 > [Description of "Figure 2-3 JavaFX UI Controls Sample"](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/img_text/uicontrols.htm)
 >
 > For more detailed information about all the available JavaFX UI controls, see the Using JavaFX UI Controls and the API documentation for the `javafx.scene.control` package.
->
+> 更多关于JavaFX UI控件的信息参看Using JavaFX UI Controls and the API documentation这个章节
 > 想要了解更多的JavaFX UI控件的信息，参看Using JavaFX UI Controls(http://www.oracle.com/pls/topic/lookup?ctx=javase80&id=JFXUI)和API 文档(https://docs.oracle.com/javase/8/javafx/api/)
 
 - Layout
 
 > Layout containers or panes can be used to allow for flexible and dynamic arrangements of the UI controls within a scene graph of a JavaFX application. The JavaFX Layout API includes the following container classes that automate common layout models:
+>在JavaFX的场景图中, 布局容器和pane(玻璃板,觉得这么译不合适)可以灵活动态的调整UI控件。JavaFX的布局API包括以下常见自动化容器布局模型，下面是对应的类
 >
 > - The `BorderPane` class lays out its content nodes in the top, bottom, right, left, or center region.
+> 边框窗格的布局分为上下左右和中心区域。
 > - The `HBox` class arranges its content nodes horizontally in a single row.
+> HBox 类将结点水平的放在一行。
 > - The `VBox` class arranges its content nodes vertically in a single column.
+VBox 将结点垂直放在一列
 > - The `StackPane` class places its content nodes in a back-to-front single stack.
+> StackPane class 将结点从后往前放在它的堆栈中。
 > - The `GridPane` class enables the developer to create a flexible grid of rows and columns in which to lay out content nodes.
+GridPane Clss允许开发者在行和列中排放结点。
 > - The `FlowPane` class arranges its content nodes in either a horizontal or vertical ”flow,” wrapping at the specified width (for horizontal) or height (for vertical) boundaries.
+> FlowPane class将内容结点按水平或垂直方向流式排列，在指定的宽度或高度，内容结点到达边界后自动换行。
 > - The `TilePane` class places its content nodes in uniformly sized layout cells or tiles
+> TilePane Class将内容结点放在大小相同的单元格中。
 > - The `AnchorPane` class enables developers to create anchor nodes to the top, bottom, left side, or center of the layout.
->
+>AnchorPane class可以让开发者在布局的上下左右创建锚结点。
 > To achieve a desired layout structure, different containers can be nested within a JavaFX application.
->
+> 为了实现所需的布局结构，可以在JavaFX应用程序中嵌套不同的容器。
 > To learn more about how to work with layouts, see the [Working with Layouts in JavaFX](http://www.oracle.com/pls/topic/lookup?ctx=javase80&id=JFXLY) article. For more information about the JavaFX layout API, see the API documentation for the `javafx.scene.layout` package.
+> 了解更多布局相关的信息,可以参看Working with Layouts in JavaFX。更多布局相关的API,参看javafx.scene.layout包的接口文档。
 
 - 2-D and 3-D Transformations
 
 > Each node in the JavaFX scene graph can be transformed in the x-y coordinate using the following `javafx.scene.tranform` classes:
->
+> JavaFX场景图中每个结点都可以使用javafx.scene.tranform中的类进行在x-y坐标上进行变换。
 > - `translate` – Move a node from one place to another along the x, y, z planes relative to its initial position.
+ 沿着x,y,z将一个结点从一个位置移动到另一个位置
 > - `scale` – Resize a node to appear either larger or smaller in the x, y, z planes, depending on the scaling factor.
+> 缩放,依赖于缩放因子，在x、y、z上改变结点的大小。
 > - `shear` – Rotate one axis so that the x-axis and y-axis are no longer perpendicular. The coordinates of the node are shifted by the specified multipliers.
+> 
 > - `rotate` – Rotate a node about a specified pivot point of the scene.
+> 在场景图对结点进行旋转。
 > - `affine` – Perform a linear mapping from 2-D/3-D coordinates to other 2-D/3-D coordinates while preserving the 'straight' and 'parallel' properties of the lines. This class should be used with `Translate`, `Scale`, `Rotate`, or `Shear` transform classes instead of being used directly.
->
+> 仿射 
 > To learn more about working with transformations, see the [Applying Transformations in JavaFX](https://docs.oracle.com/javase/8/javafx/visual-effects-tutorial/transforms.htm#JFXTE139) document. For more information about the `javafx.scene.transform` API classes, see the [API documentation](https://docs.oracle.com/javase/8/javafx/api/).
-
+理解更多变换的信息。
 - Visual Effects
 
 > The development of rich client interfaces in the JavaFX scene graph involves the use of Visual Effects or Effects to enhance the look of JavaFX applications in real time. The JavaFX Effects are primarily image pixel-based and, hence, they take the set of nodes that are in the scene graph, render it as an image, and apply the specified effects to it.
