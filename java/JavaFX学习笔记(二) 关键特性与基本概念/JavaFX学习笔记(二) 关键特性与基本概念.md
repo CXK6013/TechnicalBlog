@@ -195,7 +195,7 @@ https://www.oracle.com/java/technologies/downloads/
 
 > UI控件和CSS: JavaFX提供了主流的UI控件，开发者可以使用这些UI控件开发出来体验良好的应用。组件可以使用标准WEB技术来进行美化，比如CSS。
 >
-> DatePicker和TreeTableView UI控件在JavaFX被发布，你可以在JavaFX中使用它。参看Using JavaFX UI Controls: https://docs.oracle.com/javase/8/javafx/user-interface-tutorial/ui_controls.htm#JFXUI336。除此之外CSS在JavaFX 8 也暴露给开发者使用，允许使用CSS设置样式。
+> DatePicker和TreeTableView UI控件在JavaFX被发布，你可以在JavaFX中使用它。参看Using JavaFX UI Controls: https://docs.oracle.com/javase/8/javafx/user-interface-tutorial/ui_controls.htm#JFXUI336。    除此之外CSS在JavaFX 8 也暴露给开发者使用，允许使用CSS设置样式。
 
 - **Modena theme** The Modena theme replaces the Caspian theme as the default for JavaFX 8 applications. The Caspian theme is still available for your use by adding the `setUserAgentStylesheet(STYLESHEET_CASPIAN)` line in your Application start() method. For more information, see the Modena blog at fxexperience.com
 
