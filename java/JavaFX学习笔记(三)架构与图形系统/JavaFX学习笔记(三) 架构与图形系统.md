@@ -1,4 +1,4 @@
-# JavaFX学习笔记(二) 布局与UI控件
+# JavaFX学习笔记(二) 架构与图形系统
 
 [TOC]
 
@@ -12,9 +12,9 @@
 
 ##  Scene Graph (场景图)
 
-- The JavaFX scene graph, shown as part of the top layer in [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG), is the starting point for constructing a JavaFX application. It is a hierarchical tree of nodes that represents all of the visual elements of the application's user interface. It can handle input and can be rendered.
+- The JavaFX scene graph, shown as part of the top layer in Figure 2-1, is the starting point for constructing a JavaFX application. It is a hierarchical tree of nodes that represents all of the visual elements of the application's user interface. It can handle input and can be rendered.
 
-  JavaFX 场景图是上图的最上层，是构建JavaFX应用的起点，场景图的结构是一颗分层的结点树，所有应用程序用户界面的所有可视元素都在上面。它可以处  理输入，并且可以渲染。
+  JavaFX 场景图是上图的最上层，是构建JavaFX应用的起点，场景图的结构是一颗分层的结点树，所有应用程序用户界面的所有可视元素都在上面。它可以处理输入，并且可以渲染。
 
 - A single element in a scene graph is called a node. Each node has an ID, style class, and bounding volume. With the exception of the root node of a scene graph, each node in a scene graph has a single parent and zero or more children. It can also have the following:
 
@@ -46,7 +46,7 @@
 
 - For most uses, the scene graph simplifies working with UIs, especially when rich UIs are used. Animating various graphics in the scene graph can be accomplished quickly using the javafx.animation APIs, and declarative methods, such as XML doc, also work well.
 
-​			通常来说，场景图可以简化使用UI组件的工作，特别是当需要使用复杂UI的时候。使用Javafx.animation 的APIS和声明式方法(XML)可以快速的场景图快速			完成。		
+​			通常来说，场景图可以简化使用UI组件的工作，特别是当需要使用复杂UI的时候。使用Javafx.animation 的APIS和声明式方法(XML)可以快速完成场景图的构建。
 
 - The `javafx.scene` API allows the creation and specification of several types of content, such as:
 
@@ -66,7 +66,7 @@
 
 - Java Public APIs for JavaFX Features
 
-  The top layer of the JavaFX architecture shown in [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG) provides a complete set of Java public APIs that support rich client application development. 架构图上最底层的部分提供了一组公开APIs支持客户端应用的开发。下面是JavaFX的特性:
+  The top layer of the JavaFX architecture shown in Figure 2-1 provides a complete set of Java public APIs that support rich client application development. 架构图上最底层的部分提供了一组公开APIs支持客户端应用的开发。下面是JavaFX的特性:
 
   - Allow the use of powerful Java features, such as generics, annotations, multithreading, and Lamda Expressions (introduced in Java SE 8).
 
@@ -74,7 +74,7 @@
 
   - Make it easier for Web developers to use JavaFX from other JVM-based dynamic languages, such as Groovy and JavaScript.
 
-    其他使用基于JVM平台的语言Groovy、JavaScript，掌握JavaFX会更加容易。
+    其他使用基于JVM平台的语言Groovy、JavaScript开发者，掌握JavaFX会更加容易。
 
   - Allow Java developers to use other system languages, such as Groovy, for writing large or complex JavaFX applications.
 
@@ -82,15 +82,16 @@
 
   - Allow the use of binding which includes support for the high performance lazy binding, binding expressions, bound sequence expressions, and partial bind reevaluation. Alternative languages (like Groovy) can use this binding library to introduce binding syntax similar to that of JavaFX Script.    支持绑定、高性能的延迟绑定，绑定序列表达式、部分绑定重新刷新。其他语言像Groovy可以使用绑定库来实现和JavaFX类似的语法。
 
-  -   Extend the Java collections library to include observable lists and maps, which allow applications to wire user interfaces to data models, observe changes in those data models, and update the corresponding UI control accordingly.
+  - Extend the Java collections library to include observable lists and maps, which allow applications to wire user interfaces to data models, observe changes in those data models, and update the corresponding UI control accordingly.
 
-  ​        阔扎
+    扩展了Java的集合库，增加了一些响应式的lists和maps。	应用程序可以通过这些集合和界面控件建立绑定，当集合的数据发生改变，与之绑定的界面结点会自动更新。
+  
 
 ## Graphics System(图形系统)
 
-The JavaFX Graphics System, shown in blue in [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG), is an implementation detail beneath the JavaFX scene graph layer. It supports both 2-D and 3-D scene graphs. It provides software rendering when the graphics hardware on a system is insufficient to support hardware accelerated rendering.
+The JavaFX Graphics System, shown in blue in Figure 2-1, is an implementation detail beneath the JavaFX scene graph layer. It supports both 2-D and 3-D scene graphs. It provides software rendering when the graphics hardware on a system is insufficient to support hardware accelerated rendering.
 
-上面架构图中的蓝色部分是JavaFX的图形系统，	
+上面架构图中的蓝色部分是JavaFX的图形系统，支持2D和3D的场景图，当系统硬件不支持硬件加速渲染时，会自动进行软件渲染。
 
 ### Prism(棱镜)
 
@@ -108,11 +109,11 @@ JavaFX实现了两种图形加速管道
 
   - DirectX 11 on Windows 7
 
-  ​     在 Windows7 上使用 使用DirectX 911
+  ​     在 Windows7 上使用 使用DirectX 11
 
   - OpenGL on Mac, Linux, Embedded
 
-  ​     Max和Linux上唤起OpenGL
+     Max和Linux上唤起OpenGL
 
   - Software rendering when hardware acceleration is not possible
 
@@ -128,7 +129,7 @@ JavaFX实现了两种图形加速管道
 
 ###  Glass Windowing Toolkit
 
-> The Glass Windowing Toolkit, shown in beige in the middle portion of [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG), is the lowest level in the JavaFX graphics stack. Its main responsibility is to provide native operating services, such as managing the windows, timers, and surfaces. It serves as the platform-dependent layer that connects the JavaFX platform to the native operating system.
+> The Glass Windowing Toolkit, shown in beige in the middle portion of Figure 2-1, is the lowest level in the JavaFX graphics stack. Its main responsibility is to provide native operating services, such as managing the windows, timers, and surfaces. It serves as the platform-dependent layer that connects the JavaFX platform to the native operating system.
 
 Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Windowing Toolkit 使用缩写GWT代表，GWT在上面架构图中位于中间部分，在JavaFX的图形栈中属于底层。主要负责本机操作系统服务，比如管理窗口、定时器和显示。他连接了JavaFX平台和操系统。
 
@@ -164,11 +165,10 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 
 > When a pulse is fired, the state of the elements on the scene graph is synchronized down to the rendering layer. A pulse enables application developers a way to handle events asynchronously. This important feature allows the system to batch and execute events on the pulse.
 >
-> 脉冲被触发时，场景图上的元素状态将再次被渲染(或译为同步到渲染层)。脉冲为匮乏人员提供了一种异步处理事件的方法。我们可以在脉冲上批处理和执行事件。
->
+
+脉冲被触发时，场景图上的元素状态将再次被渲染(或译为同步到渲染层)。脉冲为开发人员提供了一种异步处理事件的方法。我们可以在脉冲上批处理和执行事件。
+
 > Layout and CSS are also tied to pulse events. Numerous changes in the scene graph could lead to multiple layout or CSS updates, which could seriously degrade performance. The system automatically performs a CSS and layout pass once per pulse to avoid performance degradation. Application developers can also manually trigger layout passes as needed to take measurements prior to a pulse.
->
-> 布局和CSS也脉冲事件相关。场景图中的大量修改操作可能导致布局和CSS多次被更新，这会严重的降低性能。系统会在脉冲被触发的时候，自动的再次渲染布局和CSS。开发人员也可以手动触发重新布局。以便在脉冲触发之前观察组件的样式、位置。
 >
 > The Glass Windowing Toolkit is responsible for executing the pulse events. It uses the high-resolution native timers to make the execution.
 >
@@ -184,7 +184,7 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 >
 > JavaFX提供了三种组件: Media类代表媒体文件，MediaPlayer负责播放多媒体文件。MediaView是负责显示多媒体。
 >
-> The Media Engine component, shown in green in [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG), has been designed with performance and stability in mind and provides consistent behavior across platforms. For more information, read theIncorporating Media Assets into JavaFX Applicationsdocument.
+> The Media Engine component, shown in green in Figure 2-1, has been designed with performance and stability in mind and provides consistent behavior across platforms. For more information, read theIncorporating Media Assets into JavaFX Applicationsdocument.
 >
 > 多媒体引擎组件是上面架构图中的绿色部分，高性能、稳定性强且跨平台。如果你想获得更多相关信息，参看http://www.oracle.com/pls/topic/lookup?ctx=javase80&id=JFXMD
 
@@ -194,7 +194,7 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 >
 > Web组件是一个基于Webkit的JavaFx UI控件,通过API提供Web浏览器的功能。
 >
-> This Web Engine component, shown in orange in [Figure 2-1](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABDFFDG), is based on WebKit, which is an open source web browser engine that supports HTML5, CSS, JavaScript, DOM, and SVG. It enables developers to implement the following features in their Java applications:
+> This Web Engine component, shown in orange in  Figure 2-1, is based on WebKit, which is an open source web browser engine that supports HTML5, CSS, JavaScript, DOM, and SVG. It enables developers to implement the following features in their Java applications:
 >
 > Web 引擎组件是上面架构图的橘黄色部分，基于WebKit，WebKit是一个开源的Web浏览器引擎，支持HTML5，CSS、JavaScript，DOM，SVG。能够让开发者享用以下特性。
 >
@@ -256,18 +256,18 @@ Glass 是玻璃的意思，这里暂时没想到什么好的翻译, Glass Window
 >
 > CSS样式也可以在运行时应用，允许应用外观动态改变。
 >
-> [Figure 2-2](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/jfx-architecture.htm#BABICCFD) demonstrates the application of two different CSS styles to the same set of UI controls.
+> Figure 2-2 demonstrates the application of two different CSS styles to the same set of UI controls.
 >
 > 下面的图在使用了两种不同的CSS样式在一组相同的UI控件中。
 >
 > Figure 2-2 CSS Style Sheet Sample
 >
 > ![Description of Figure 2-2 follows](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/img/css-style-sample.gif)
-> [Description of "Figure 2-2 CSS Style Sheet Sample"](https://docs.oracle.com/javase/8/javafx/get-started-tutorial/img_text/css-style-sample.htm)
+> 
 >
 > JavaFX CSS is based on the W3C CSS version 2.1 specifications, with some additions from current work on version 3. The JavaFX CSS support and extensions have been designed to allow JavaFX CSS style sheets to be parsed cleanly by any compliant CSS parser, even one that does not support JavaFX extensions.
 >
-> JavaFX 的CSS基于W3C CSS 2.1版本，并从CSS 3版本添加了一些额外的内容。JavaFX CSS提供了对标准CSS的扩展,任何符合CSS规范的解析器都可以解析这些扩展，即时这些解释器不支持JavaFX对CSS的扩展,符合标准的CSS解析器也能解析。
+> JavaFX 的CSS基于W3C CSS 2.1版本，并从CSS 3版本添加了一些额外的内容。JavaFX CSS提供了对标准CSS的扩展,任何符合CSS规范的解析器都可以解析这些扩展，即使这些解释器不支持JavaFX对CSS的扩展,符合标准的CSS解析器也能解析。
 >
 >  This enables the mixing of CSS styles for JavaFX and for other purposes (such as for HTML pages) into a single style sheet. All JavaFX property names are prefixed with a vendor extension of ”`-fx-`”, including those that might seem to be compatible with standard HTML CSS, because some JavaFX values have slightly different semantics.
 > 我们可以将JavaFX的CSS样式和嵌入网页的样式放入一个CSS文件中。所有JavaFX的CSS样式属性名都会带有一个-fx-前缀,包括那些可能与标准HTML、CSS语义看起来相同的属性，因为他们在JavaFX有不同的语义。(比如字体大小,Web中用font-size,JavaFX用-fx-font-size来表示,原因在于JavaFX中的字体大小和Web中略有不同)
@@ -325,29 +325,56 @@ GridPane Clss允许开发者在行和列中排放结点。
 
 > Each node in the JavaFX scene graph can be transformed in the x-y coordinate using the following `javafx.scene.tranform` classes:
 > JavaFX场景图中每个结点都可以使用javafx.scene.tranform中的类进行在x-y坐标上进行变换。
+>
 > - `translate` – Move a node from one place to another along the x, y, z planes relative to its initial position.
- 沿着x,y,z将一个结点从一个位置移动到另一个位置
+>  沿着x,y,z将一个结点从一个位置移动到另一个位置
 > - `scale` – Resize a node to appear either larger or smaller in the x, y, z planes, depending on the scaling factor.
 > 缩放,依赖于缩放因子，在x、y、z上改变结点的大小。
 > - `shear` – Rotate one axis so that the x-axis and y-axis are no longer perpendicular. The coordinates of the node are shifted by the specified multipliers.
-> 
+>
 > - `rotate` – Rotate a node about a specified pivot point of the scene.
 > 在场景图对结点进行旋转。
 > - `affine` – Perform a linear mapping from 2-D/3-D coordinates to other 2-D/3-D coordinates while preserving the 'straight' and 'parallel' properties of the lines. This class should be used with `Translate`, `Scale`, `Rotate`, or `Shear` transform classes instead of being used directly.
 > 仿射 
-> To learn more about working with transformations, see the [Applying Transformations in JavaFX](https://docs.oracle.com/javase/8/javafx/visual-effects-tutorial/transforms.htm#JFXTE139) document. For more information about the `javafx.scene.transform` API classes, see the [API documentation](https://docs.oracle.com/javase/8/javafx/api/).
-理解更多变换的信息。
-- Visual Effects
+> To learn more about working with transformations, see the Applying Transformations in JavaFX document. For more information about the `javafx.scene.transform` API classes, see the API documentation.
+> 理解更多变换的信息，参看Applying Transformations in JavaFX document  https://docs.oracle.com/javase/8/javafx/visual-effects-tutorial/transforms.htm#JFXTE139。这些变换的类都在javafx.scene.transform  包下面，更多的参看API documentation https://docs.oracle.com/javase/8/javafx/api/
+- Visual Effects 视觉效果
 
-> The development of rich client interfaces in the JavaFX scene graph involves the use of Visual Effects or Effects to enhance the look of JavaFX applications in real time. The JavaFX Effects are primarily image pixel-based and, hence, they take the set of nodes that are in the scene graph, render it as an image, and apply the specified effects to it.
+> The development of rich client interfaces in the JavaFX scene graph involves the use of Visual Effects or Effects to enhance the look of JavaFX applications in real time. 
+>
+> 在JavaFX的场景图中开发复杂界面时，可以使用视觉效果来实时增强界面的显示效果。
+>
+> The JavaFX Effects are primarily image pixel-based and, hence, they take the set of nodes that are in the scene graph, render it as an image, and apply the specified effects to it.
+>
+> JavaFX的效果主要是基于像素的，因此他们会将结点渲染为图片，然后将效果应用。
 >
 > Some of the visual effects available in JavaFX include the use of the following classes:
 >
-> - `Drop Shadow` – Renders a shadow of a given content behind the content to which the effect is applied.
-> - `Reflection` – Renders a reflected version of the content below the actual content.
-> - `Lighting` – Simulates a light source shining on a given content and can give a flat object a more realistic, three-dimensional appearance.
+> JavaFX现在可用的效果有以下类:
 >
-> For examples on how to use some of the available visual effects, see the [Creating Visual Effects](https://docs.oracle.com/javase/8/javafx/visual-effects-tutorial/visual_effects.htm#JFXTE191) document. For more information about all the available visual effects classes, see the [API documentation](https://docs.oracle.com/javase/8/javafx/api/) for the `javafx.scene.effect` package.
+> - `DropShadow` – Renders a shadow of a given content behind the content to which the effect is applied
+>
+> ​       在指定的内容后面渲染阴影
+>
+> - `Reflection` – Renders a reflected version of the content below the actual content.
+>
+>   在实际内容结点下面形成倒影
+>
+> - `Lighting` Simulates a light source shining on a given content and can give a flat object a more realistic, three-dimensional appearance.
+>
+>   模拟光源照射指定内容可以让界面看起来更逼真，更立体。
+>
+> For examples on how to use some of the available visual effects, see the Creating Visual Effects document. 
+>
+> 更多如何使用可视化效果的例子，参看https://docs.oracle.com/javase/8/javafx/visual-effects-tutorial/visual_effects.htm#JFXTE191
+>
+> For more information about all the available visual effects classes, see the API documentationfor the `javafx.scene.effect` package.
+>
+> 可视化的类都在javafx.scene.effect这个类里面，详细的说明参看:https://docs.oracle.com/javase/8/javafx/api/
+
+## 写在最后
+
+很奇怪JavaFX的官网放教程为什么不把oracle写的教程放上去，虽然这份教程基于JDK 8和JavaFX 8，但是配文示例都很详细，很适合入门。这份用户文档覆盖了基本所有重要的概念, 以及开发人员主要关注的问题，比如打包。之前我对Java开发的桌面应用会有一个刻板的认识，开发完成打成jar包，那需要这个jar的人，必须装虚拟机，但其实可以用打包插件打成操作系统失败的包。
 
 ## 参考资料
 
