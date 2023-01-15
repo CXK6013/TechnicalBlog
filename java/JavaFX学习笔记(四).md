@@ -75,7 +75,7 @@ public class HelloWorld extends Application {
 
 效果如下图所示:
 
-![image-20221229095038509](C:\Users\chenxingke\AppData\Roaming\Typora\typora-user-images\image-20221229095038509.png)
+
 
 当我们点击按钮，控制台会输出hello world。HelloWorld这个类继承了Application(javafx.application.Application)，重写的start方法是所有JavaFX应用的主要入口。在上面的程序中，在语句一种我们声明了一个按钮, 在语句二中我们为按钮设置了显示内容hello world,  在语句三中我们为按钮的点击事件绑定了行为，当点击按钮，会在控制台输出helloworld。语句四我们声明了一个布局容器StackPane，在JavaFX中由各种各样的布局容器，StackPane会将装入的控件堆叠显示，向下面这样:
 
