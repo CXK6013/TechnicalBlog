@@ -326,6 +326,29 @@ public DeferredResult<String> quotes() {
 deferredResult.setResult(data);
 // Remove deferredResult from the Queue or Map
 ```
+```java
+@RestController
+public class AsyncTestController {
+
+    private ThreadPoolExecutor threadPoolExecutor = new ThreadPoolExecutor(4,4,4L,TimeUnit.SECONDS,new LinkedBlockingQueue<>());
+
+    @GetMapping("/asnc")
+    public DeferredResult<String> pictureUrl(){
+        DeferredResult<String> deferredResult = new DeferredResult<>();
+        threadPoolExecutor.execute(()->{
+            try {
+                // 模拟耗时操作
+                TimeUnit.SECONDS.sleep(6);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            deferredResult.setResult("hello world");
+        });
+        return deferredResult;
+    }
+}
+```
+
 
 哈哈哈哈，感觉不是面试，感觉我在给你上课一样。我对你的感觉还可以，等二面吧。
 
