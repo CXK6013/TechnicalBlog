@@ -2,8 +2,6 @@
 
 [TOC]
 
-
-
 ## 前言
 
 本身是打算接着写JMM、JCStress，然后这两个是在公司闲暇的时候随手写的，没有推到Github上，但写点什么可以让我获得宁静的感觉，所性就从待办中拎了一篇文章，也就是这篇泛型。这篇文章来自于我朋友提出的一个问题，比如我在一个类里面声明了两个方法，两个方法只有返回类型是int，一个是Integer，像下面这样,能否通过编译: 
@@ -19,7 +17,7 @@ public class DataTypeTest {
 }
 ```
 
-我当时回答的时候是将Integer和int当做不同的类型来思考的，我回答的是可以，但是我的朋友说，这是不行的。后面我想了一下是泛型擦除嘛，朋友点头说是的。其实我对泛型擦除是有所耳闻的，只是平时觉得对我用处不大，所性就一直放在那里，不去思考，后面也在想是不是跟自动装箱拆箱有关系。最近也在一些工具类库，用到了泛型，发现自己对泛型的理解还是有所欠缺，所以今天就重新学习泛型，顺带梳理一下自己对泛型的理解，后面发现都揉在一篇文章里面，篇幅还是有些过大，这里就分拆两篇。
+我当时回答的时候是将Integer和int当做不同的类型来思考的，我回答的是可以，但是我的朋友说，这是不行的。后面我想到了泛型擦除，但其实这跟泛型擦除倒是没关系，问题出在自动装箱和拆箱上，Java的编译器将原始类型转为包装类，包装类转为基本类型。但关于泛型，我用起来的时候，发现有些概念混乱，但是不影响开发速度，再加上平时觉得对我用处不大，所性就一直放在那里，不去思考。最近也在一些工具类库，用到了泛型，发现自己对泛型的理解还是有所欠缺，所以今天就重新学习泛型，顺带梳理一下自己对泛型的理解，后面发现都揉在一篇文章里面，篇幅还是有些过大，这里就分拆两篇。
 
 - 泛型的基本的使用
 - 泛型擦除、实现、向前兼容、与其他语言的对比。
@@ -336,7 +334,8 @@ CompareUtil.boxTest(new Car<Integer>());
 
  当我们使用泛型编程的时候，这是一个常见的误解，但这是一个需要学习的重要概念:
 
-![diagram showing that Box<Integer> is not a subtype of Box<Number>](https://docs.oracle.com/javase/tutorial/figures/java/generics-subtypeRelationship.gif)
+![generics-subtypeRelationship](https://user-images.githubusercontent.com/45529222/234266247-2018988c-a51b-40d8-878d-46f4f4e7c4f2.gif)
+
 
 给两个具体类型A和B，比如Number和Integer，MyClass\<A>和MyClass\<B>之间是没关系的，但不管A和B是否有关系，MyClass\<A>和MyClass\<B>都有一个共同父类叫Object。
 
@@ -360,49 +359,388 @@ interface PayloadList<E,P> extends List<E> {
 
 > In generic code, the question mark (`?`), called the *wildcard*, represents an unknown type. The wildcard can be used in a variety of situations: as the type of a parameter, field, or local variable; sometimes as a return type (though it is better programming practice to be more specific). The wildcard is never used as a type argument for a generic method invocation, a generic class instance creation, or a supertype.
 >
-> 在泛型代码中 ，？被称为通配符，代表未知类型。通配符可以在各种情况下使用:  作为参数、字段或局部变量的类型；有时作为返回类型(尽管更好的编程实际是更具体的)。通配符从不用作泛型方法的调用，泛型类示例创建或父类型的类型参数。 《java  Tutorial》
+> 在泛型代码中 ，？被称为通配符，代表未知类型。通配符可以在各种情况下使用:  作为参数、字段或局部变量的类型；有时作为返回类型(尽管更好的编程实际是更具体的)。通配符从不用作泛型方法的调用，泛型类示例创建或父类型的类型参数。 《Java  Tutorial》
 
 其实看到这块的时候，我对这个通配符是有点不了解的，我将这个符号理解为和T、V一样的泛型参数名，但是我用？去取代T的时候，发现IDEA里面出现了错误提示。那代表？号是特殊的一类泛型符号，有专门的含义。 假如我们想制作一个处理List\<Number>的方法，我们希望限制集合中的元素只能是Number的子类，我们看了上面的有界类型参数就可能会很自然的写出下面的代码:
 
+```java
+public static <T extends Number> int processNumberList(List<T> anArray) {
+     // 省略处理逻辑
+     return 0;
+}
+```
+
+但有了通配符之后，事实上我们可以这么声明:
+
+```java
+public static int processNumberList(List<? extends  Number> numberList ) {
+    return 0;
+}
+```
+
+事实上编译器会认为这两个方法是一样的，IDEA上会给出提示是:
+
+> 'processNumberList(List<? extends Number>)' clashes with 'processNumberList(List<T>)'; both methods have same erasure
+>
+> 两个方法拥有相同的泛型擦除
+
+我们将在下文专门讨论泛型擦除 , 我们这里还是熟悉泛型的基本使用。
+
+```java
+? extends Number
+```
+
+这种语法我们称之为上界类型通配符(Upper Bounded Wildcards)，表示的是传入的List中的元素只能是Number实例、或Number子类型的实例。在遍历中可以调用上界的方法。
+
+####  下界通配符
+
+有上界通配符对应的就有下界通配符，上界通配符限制的是传入的类型必须是限制类型或限制类型的子类型，而下界类型则限制传入类型是限制类型或限制类型的父类型。举个例子，你只想传入的类型是List\<Integer>,List\<Number>, List\<Object>,或任何容纳Integer类型的List 。我们就可以如下写:
+
+```java
+public static void addNumbers(List<? super Integer> list) {
+    for (int i = 1; i <= 10; i++) {
+        list.add(i);
+    }
+}
+```
+
+但值得注意的是，上界下界不能同时出现。
+
+#### 无界通配符
+
+在《Java Tutorial》中给出了两个通配符的经典使用场景:
+
+- If you are writing a method that can be implemented using functionality provided in the `Object` class.
+
+> 如果你正在编写的方法可以用Object类提供的方法进行实现。
+
+- When the code is using methods in the generic class that don't depend on the type parameter. For example, `List.size` or `List.clear`. In fact, `Class<?>` is so often used because most of the methods in `Class<T>` do not depend on `T`.
+
+> 类中的代码不依赖类型参数，例如List.size、List.clear。事实上，Class\<?> 经常被使用，原因在于，Class\<T>的大部分方法都不依赖于类型参数T。
+
+考虑下面的方法:
+
+```java
+public static void printList(List<Object> list) {
+    for (Object elem : list)
+        System.out.println(elem + " ");
+    System.out.println();
+}
+```
+
+这个方法的意图是打印任意List元素，但是这么写的话，你再调用的时候只能传递List\<Object>类型的参数，不能传递List\<Integer>类型的参数，原因也是在我们讨论过的，List\<Integer> 并不是List\<Object>的子类型。 这个时候我们就可以用到 ? 通配符。
+
+```java
+public static void printList(List<?> list) {
+    for (Object elem: list)
+        System.out.print(elem + " ");
+    System.out.println();
+}
+```
+
+因为任意类型A，List\<A>都是List\<?>的子类型。值得注意的是List\<Object>和List\<?> 并不相同，在List\<Object>里面你可以插入一切实例，但是在List\<?>你就只能添加null值。
+
+####  通配符和子类型化
+
+现在我们有两个类A和B，关系如下:
+
+```java
+class A {}
+class B extends A{}
+```
+
+B是A的子类，所以我们可以写出这样的代码:
+
+```java
+B b = new B();
+A a = b;
+```
+
+这种写法我们一般称之为向上转型，但是下面的代码就不会编译通过:
+
+```java
+List<B> lb = new ArrayList<>();
+List<A> la = lb;   // compile-time error
+```
+
+Integer是Number的子类型，List\<Integer>、List\<Number> 之间的联系如下:
+
+![diagram showing that the common parent of List<Number> and List<Integer> is the list of unknown type](https://docs.oracle.com/javase/tutorial/figures/java/generics-listParent.gif)
+
+尽管Integer是Number的子类型，但是List\<Integer>却不是List\<Number>的子类型，事实上，这两种类型并没有关系。它们的共同父类是List<?>,  为了让List\<Integer>和List\<Number>之间产生关系，我们可以借助上界通配符：
+
+```java
+List<? extends Integer> intList = new ArrayList<>();
+List<? extends Number>  numList = intList;  // OK. List<? extends Integer> is a subtype of List<? extends Number>
+```
+
+下面这张图声明了用上界和下界通配符声明的几个List类之间的关系:
+
+![diagram showing that List<Integer> is a subtype of both List<? extends Integer> and List<?super Integer>. List<? extends Integer> is a subtype of List<? extends Number> which is a subtype of List<?>. List<Number> is a subtype of List<? super Number> and List>? extends Number>. List<? super Number> is a subtype of List<? super Integer> which is a subtype of List<?>.](https://docs.oracle.com/javase/tutorial/figures/java/generics-wildcardSubtyping.gif)
 
 
 
+该怎么理解这幅关系图呢？ Integer是Number的子类，所以List\<? extends Integer> 是 List\<? extends Number>的子类，有没有更严格的理解呢，我在理解这个关系的时候，尝试将这种父子关系抽象为区间，所以 ？ extends   Number <=> [oo,Number] , ? extends Integer  <=>  [oo,Integer], 那用到了数学的区间，我们不妨将Number和Integer兑换为数字，越是抽象的数字越大，因为表现能力更丰富，所以我们姑且将Number理解为5，Integer理解为4。 这样的话,  好像也能理解的动:
 
+```java
+? extends   Number <=> [oo,5] 
+? extends  Integer <=> [oo,4] 
+? super  Integer  <=> [4,oo] 
+? extends  Number <=>  [5,oo]   
+```
 
+这是一种理解方式，《**The Java™ Tutorials**》在介绍多态的时候，指出多态首先是一个生物学上的概念，那关于这种父子关系，我想到了生物的谱系:
 
+![img](https://www.cdstm.cn/gallery/media/mkjx/smsj/201605/W020160527666559821421.jpg)
 
+我们将Number理解为牛亚科，Integer理解为羚羊亚科，那所有羚羊亚科的下级科都是牛亚科的下级科，所有牛亚科的上机科目都是羚羊亚科的上级科目。这样理解似乎更自然。
 
+####  通配符捕获和辅助方法
 
+在某些情况下，编译器会尝试推断通配符的类型。例如一个List被定为List\<?>，编译器执行表达式的时候，编译器会从代码中推断出一个具体的类型。这种情况被称为通配符捕获。大部分情况下，你都不需要担心通配符捕获的问题，除非你看到包含"捕获" 这一短语的错误信息。通配符错误通常发生在编译器：
 
-#### 上界通配符
+```java
+public class WildcardError {
+    void foo(List<?> i) {
+        i.set(0, i.get(0));
+    }
+}
+```
 
+这段代码就无法通过编译。那我们在使用泛型的时候，何时使用上界通配符，何时使用下界通配符。下面是一些通用的一些设计原则。
 
+#### 通配符使用指南
 
-#### 类型推断
+首先我们将变量分为两种功能:
 
+- 输入变量
 
+> 输入变量向代码提供数据。想象一个有两个参数的复制方法: copy(src,desc)， src参数提供了要复制的数据，所以他是输入参数.
 
-#### 下界通配符
+- 输出变量
 
+> 输出变量保存数据以便在其他地方使用，在复制的例子中，copy(src,dest),dest接收要复制的数据，所以他是输出参数。
 
+你可以使用"输入"和"输出" 原则来决定是否使用通配符以及什么类型的通配符合适，下面的列表提供了遵循的准则：
 
+- An "in" variable is defined with an upper bounded wildcard, using the `extends` keyword.
 
+> 入参用上界通配符，使用extends关键字。
+
+- An "out" variable is defined with a lower bounded wildcard, using the `super` keyword.
+
+> 输出变量用下界通配符, 使用super关键字
+
+- In the case where the "in" variable can be accessed using methods defined in the `Object` class, use an unbounded wildcard.
+
+> 如果需要使用入参可以使用定义在Object类中的方法时，使用无界通配符。
+
+- In the case where the code needs to access the variable as both an "in" and an "out" variable, do not use a wildcard.
+
+> 当代码需要将变量同时用作输入和输出时，不要使用无界通配符。
 
 ## 泛型擦除
 
+Generics were introduced to the Java language to provide tighter type checks at compile time and to support generic programming.
 
+泛型被引入Java,  在编译时提供了强类型检查，支持了通用泛型编程。
 
+ To implement generics, the Java compiler applies type erasure to:
 
+> Java选择用泛型擦除实现泛型
 
-## 泛型限制
+- Replace all type parameters in generic types with their bounds or `Object` if the type parameters are unbounded. The produced bytecode, therefore, contains only ordinary classes, interfaces, and methods.
 
+> 如果泛型的类型参数是有边界的，则用边界来替换，如果是无界的，就用Object来替换。所以最后的字节码，还是普通的类、方法、接口。
 
+- Insert type casts if necessary to preserve type safety.
 
+> 必要时插入类型转换确保类型安全
 
+- Generate bridge methods to preserve polymorphism in extended generic types.
+
+> 生成桥接方法以保留扩展泛型类型中的多态性。
+
+### Erasure of Generic Types  
+
+首先我们声明一个泛型类:
+
+```java
+public class Node<T>{
+  private T data;
+  private Node<T> next;
+  
+  public Node(T data , Node<T> next) {
+      this.data = data;
+      this.next = next;
+  }
+  public T getData(){return data};
+}
+```
+
+类型参数没有限界，编译器会将T替换为Object:
+
+```java
+public class Node{
+  private Object data;
+  private Node next;
+  
+  public Node(Object data , Node next) {
+      this.data = data;
+      this.next = next;
+  }
+  public Object getData(){return data};
+}
+```
+
+如果我们对类型参数进行了限制:
+
+```java
+public class Node<T extends Comparable<T>> {
+
+    private T data;
+    private Node<T> next;
+
+    public Node(T data, Node<T> next) {
+        this.data = data;
+        this.next = next;
+    }
+	public T getData() { return data; }
+}    
+```
+
+Java编译器会用类型参数的第一个限界来替换，实际擦除之后，变成了下面这样:
+
+```java
+public class Node {
+
+    private Comparable data;
+    private Node next;
+
+    public Node(Comparable data, Node next) {
+        this.data = data;
+        this.next = next;
+    }
+
+    public Comparable getData() { return data; }
+    // ...
+}
+```
+
+### 泛型方法擦除
+
+现在我们声明一个泛型方法，如下所示:
+
+```java
+public static <T> int count(T[] anArray, T elem) {
+    int cnt = 0;
+    for (T e : anArray)
+        if (e.equals(elem))
+            ++cnt;
+        return cnt;
+}
+```
+
+泛型参数未被限制，经过Java编译器的处理，T会被替换为Object。
+
+```java
+public static  int count(Object[] anArray, Object elem) {
+    int cnt = 0;
+    for (T e : anArray)
+        if (e.equals(elem))
+            ++cnt;
+        return cnt;
+}
+```
+
+对泛型参数进行限制:
+
+```java
+class Shape { /* ... */ }
+class Circle extends Shape { /* ... */ }
+class Rectangle extends Shape { /* ... */ }
+public static <T extends Shape> void draw(T shape) { /* ... */ }
+```
+
+Java的编译器会用shape替换T:
+
+```java
+public static void draw(Shape shape) { /* ... */ }
+```
+
+### 类型擦除的影响和桥接方法
+
+有时，类型擦除会导致预料之外的事情发生，下面的例子显示了这种情况是如何发生的:
+
+```java
+public class Node<T> {
+
+    public T data;
+
+    public Node(T data) { this.data = data; }
+
+    public void setData(T data) {
+        System.out.println("Node.setData");
+        this.data = data;
+    }
+}
+
+public class MyNode extends Node<Integer> {
+    public MyNode(Integer data) { super(data); }
+
+    public void setData(Integer data) {
+        System.out.println("MyNode.setData");
+        super.setData(data);
+    }
+}
+```
+
+```java
+MyNode mn = new MyNode(5);
+Node n = mn; // 原始类型会给一个警告
+n.setData("Hello"); // 这里会抛出一个类型转换异常
+Integer x = mn.data;
+```
+
+编译器在编译泛型类或泛型接口的时候，编译器可能会创建一种方法，我们称之为桥方法。通常不需要担心桥方法，但如果它出现在堆栈中，可能你会感到困惑。类型擦除之后，Node和MyNode会变成下面这样:
+
+```java
+public class Node {
+
+    public Object data;
+
+    public Node(Object data) { this.data = data; }
+
+    public void setData(Object data) {
+        System.out.println("Node.setData");
+        this.data = data;
+    }
+}
+
+public class MyNode extends Node {
+    public MyNode(Integer data) { super(data); }
+
+    public void setData(Integer data) {
+        System.out.println("MyNode.setData");
+        super.setData(data);
+    }
+}
+```
+
+在类型擦除之后，父类和子类的签名不一致，Node.setData(T )方法变成`Node.setData(Object) 。因此，MyNode.setData(T)方法并没有覆盖Node.setData(Object)方法， 为了维护泛型的多态，Java编译器产生了桥接方法，以便让子类型也能继续工作。按照我们对泛型的理解，Node中的setData方法入参也应当是Integer, 如果没有桥接方法，那么MyNode中就会继承一个setData(Object data)方法。
 
 ## 总结一下
 
+Java为什么要引入泛型呢，原因大致有这么几个: 增强代码复用性、让错误在编译的时候就显现出来。Java的泛型机制事实上将泛型分为两类:
 
+- 类型参数 type Parameter
+- 通配符 Wildcard 
+
+类型参数作用在类和接口上，通配符作用于方法参数上。为了保持向后兼容，Java选择了泛型擦除来实现泛型，这一实现机制在早期的我来看，这种实现并不好，我认为这种实现影响了Java的性能，我甚至认为这不能称之为真正的泛型,  比不上C#，但是在重学泛型的过程中,  事实上Java的实现也泛型，详细的可以参看下面这个链接:
+
+> https://www.zhihu.com/question/28665443/answer/1873474818
+
+写本篇的时候本来是想将仔细讨论下泛型的，比如泛型的实现，Java中泛型的未来，对比其他语言，但是后面发现越写越多，索性就拆成两篇了。本篇基本上可以理解为《**The Java™ Tutorials**》中泛型这一章节的翻译，也加入了自己的理解。
 
 ##  参考资料
 
