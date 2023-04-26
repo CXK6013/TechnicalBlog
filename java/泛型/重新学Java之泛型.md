@@ -46,7 +46,7 @@ public class DataTypeTest {
 
 > In a nutshell, generics enable *types* (classes and interfaces) to be parameters when defining classes, interfaces and methods. Much like the more familiar *formal parameters* used in method declarations, type parameters provide a way for you to re-use the same code with different inputs. The difference is that the inputs to formal parameters are values, while the inputs to type parameters are types. Code that uses generics has many  benefits over non-generic code:
 >
-> 简而言之，泛型可以使得在定义类、接口和方法时可以将类型作为参数。就像在方法中声明形式参数一样，类型参数提供了一种方式，让你可以在不同的输入使用相同的代码。不同之处在于，形式参数输入的是指，而类型参数的输入是类型。使用泛型的代码相对于非泛型的代码有很多优点:
+> 简而言之，泛型可以使得在定义类、接口和方法时可以将类型作为参数。就像在方法中声明形式参数一样，类型参数提供了一种方式，让你可以在不同的输入使用相同的代码。不同之处在于，形式参数输入的是值，而类型参数的输入是类型。使用泛型的代码相对于非泛型的代码有很多优点:
 
 - > Stronger type checks at compile time. A Java compiler applies strong type checking to generic code and issues errors if the code violates type safety. Fixing compile-time errors is easier than fixing runtime errors, which can be difficult to find.
 
