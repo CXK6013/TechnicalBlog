@@ -116,7 +116,7 @@ public class APISample_01_Simple {
 
 我们上面已经对这个测试示例进行了简单的解读，这里我们要总结一下JCStress的工作模式 ,  我们在类里面声明我们希望JCStress执行的行为，这些行为的结果被记录到结果中,  最后和@Outcome注解中声明的内容做对比, 输出对应的结果:
 
-![image-20230505144522066](C:\Users\chenxingke\AppData\Roaming\Typora\typora-user-images\image-20230505144522066.png)
+![iqv8hp.png](https://i.328888.xyz/2023/05/12/iqv8hp.png)
 
 现在这段代码, 我们唯一还不明白作用的就是@outcome、@State、   @Actor。我们还是看源码上的注释:
 
@@ -178,41 +178,420 @@ public class IIII_Result implements Serializable {
 }
 ```
 
-我们会发现II_Result、IIII_Result的toString方法都是将成员变量用逗号拼接。那上面的例子我们就能大致看懂了，JCStress执行APISample_01_Simple，然后将结果和Outcome中的id做比较，如果相等会被记录，expect属性是什么意思呢？对我们希望出现的结果进行评级，哪些是我们重点的结果，一共有四个等级:
+我们会发现II_Result、IIII_Result的toString方法都是将成员变量用逗号拼接。那上面的例子我们就能大致看懂了，JCStress执行APISample_01_Simple，然后将结果和Outcome中的id做比较，如果相等会被记录，expect属性是什么意思呢？对我们希望出现的结果进行评级，哪些是我们重点的结果，一共有四个等级: 
 
+ACCEPTABLE: Acceptable result. Acceptable results are not required to be present 
 
+> 可接受的结果，可接受的结果不要求出现
+
+ACCEPTABLE_INTERESTING:   Same as ACCEPTABLE, but this result will be highlighted in reports.
+
+> 和ACCEPTABLE一样，但是结果出现了就会在报告里面被高亮。
+
+FORBIDDEN:  Forbidden result. Should never be present.
+
+> 禁止出现的结果 应当永远不出现
+
+UNKNOWN:   Internal expectation: no grading. Do not use.
+
+> 未知，不要用
 
 - Actor
 
 > Actor is the central test annotation. It marks the methods that hold the actions done by the threads. The invariants that are maintained by the infrastructure are as follows:
 >
+> Actor 是核心测试注解，被它标记的方法将会一个线程所执行，基础架构会维护一组不变的条件:
+>
 > 1. Each method is called only by one particular thread.
-> 2. Each method is called exactly once per State instance.
+>
+>    每个方法会被一个特殊的线程所调用。
+>
+> 1. Each method is called exactly once per State instance.
+>
+> ​    每个方法被每个State实例所调用
 
-> Note that the invocation order against other Actor methods is deliberately not specified. Therefore, two or more Actor methods may be used to model the concurrent execution on data held by State instance.
-> Actor-annotated methods can have only the State or Result-annotated classes as the parameters. Actor methods may declare to throw the exceptions, but actually throwing the exception would fail the test.
+> Note that the invocation order against other Actor methods is deliberately not specified. 
+>
+> 注意Actor所执行的方法调用顺序是故意不指定的。
+>
+> Therefore, two or more Actor methods may be used to model the concurrent execution on data held by State instance.
+>
+> 因此，可以使用两个或多个Actor方法来模拟对State实例持有数据的并发执行。
+>
+> Actor-annotated methods can have only the State or Result-annotated classes as the parameters. 
+>
+> 只有被@Result或@State标记的类才能作为Actor方法(拥有Actor注解)的参数
+>
+> Actor methods may declare to throw the exceptions, but actually throwing the exception would fail the test.
+>
+> Actor方法可能声明抛出异常，但是实际上抛出的异常会导致测试失败。
 
-## 总结一下
+这里我来解读一下，II_Result 这个类上就带有@Result注解。现在我们要解读的就是++v了，除了++v之外，我们熟悉的还有v++，如果现在问我这俩啥区别，我大概率回答的是++v 先执行自增，然后将自增后的值赋给v，对应的代码应该是像下面这样:
 
+```java
+v = v + 1;
+```
 
+那v++呢，先使用值，后递增，我理解应该是像下面这样:
 
+```java
+v = v; 
+v = v + 1;
+```
 
+我们日常使用比较多的应该就是v++了:
+
+```java
+for(int v = 0 ; v < 10 ; v++){}
+```
+
+for循环的括号是个小代码块，第一次执行的时候首先声明了一个v = 0，然后判断v是否小于10，如果小于执行v++，这个时候v的值仍然是0，然后走循环体里面的内容。结合我们上面的理解，这似乎有些割裂，如果按照我对v++的理解，一条语句等价于两条语句，那么这两条语句还分开执行，这看起来非常怪。如果我们将v++对一个变量进行赋值，然后这个变量拿到的就是自增之后的值，我们也可以对我们的理解打补丁，即在循环中两条语句不是顺序执行，先执行v = v，循环体里面的内容执行完毕再执行v = v + 1。那再完善一下呢，i++事实上被称为后缀表达式，语义为i+1，然后返回旧值。++i被称为前缀表达式, 语义为自增返回新值。乍一看好像是自增的，但是我们在细化一下，在自增之前都要读取变量的值，所以无论是++v，还是v++，都需要先读值再自增，所以这是两个操作，在Java里面不是原子的，这是我们的论断，我们跑一下上面的例子，看下结果。
 
 ## 跑一下看一下结果
 
+一般来说JCStress是要用命令行跑的，但是这对于新手不友好，有些概念还需要理解一下，但是IDEA有专门为JCStress制作的插件，但这个插件并没有做到全版本的IDEA适配，目前适配的版本如下:
+
+> Aqua — 2023.1 (preview)
+
+> IntelliJ IDEA Educational — 2022.2 — 2022.2.2
+
+> IntelliJ IDEA Community — 2022.2 — 2023.1.2 (eap)
+
+> IntelliJ IDEA Ultimate — 2022.2 — 2023.1.2 (eap)
+
+> Android Studio — Flamingo | 2022.2.1 — Hedgehog | 2023.1.1 Canary 2
+
+如果你的IDEA里面没搜到这个插件，那就说明没适配，然后请升级一下IDEA的版本，在运行上面这个例子之前我们首先要引入一下maven依赖:
+
+```
+
+```
+
+
+
+## 例子解读
+
+### API_02_Arbiters
+
+Arbiter 意为冲裁。
+
+```java
+/*
+    Another flavor of the same test as APISample_01_Simple is using arbiters.
+    另一个和APISample_01_Simple一样味道的测试是使用仲裁者。
+    
+    Arbiters run after both actors, and therefore can observe the final result. 
+    Arbiters方法在actor方法运行之后执行,因此可以观察到最后的结果。
+
+	This allows to observe the permanent atomicity failure after both actors  finished.
+	在actor方法执行之后,Arbiters方法将会观察到原子性失败的结果	
+    How to run this test:
+       $ java -jar jcstress-samples/target/jcstress.jar -t API_02_Arbiters
+        ...
+
+      RESULT         SAMPLES     FREQ       EXPECT  DESCRIPTION
+           1     888,569,404    6.37%  Interesting  One update lost: atomicity failure.
+           2  13,057,720,260   93.63%   Acceptable  Actors updated independently.
+ */
+
+@JCStressTest
+
+// These are the test outcomes.
+@Outcome(id = "1", expect = ACCEPTABLE_INTERESTING, desc = "One update lost: atomicity failure.")
+@Outcome(id = "2", expect = ACCEPTABLE,             desc = "Actors updated independently.")
+@State
+public class API_02_Arbiters {
+
+    int v;
+
+    @Actor
+    public void actor1() {
+        v++;
+    }
+
+    @Actor
+    public void actor2() {
+        v++;
+    }
+
+    @Arbiter
+    public void arbiter(I_Result r) {
+        r.r1 = v;
+    }
+}
+```
+
+### API_03_Termination
+
+```java
+/*
+    Some concurrency tests are not following the "run continously" pattern.
+    一些并发测试可能并不适用"持续运行"模式。
+    One of interesting test groups is that asserts if the code had terminated after a signal.
+    一个有趣的测试是确定代码是否在接收到信号之后终止
+    Here, we use a single @Actor that busy-waits on a field, and a @Signal that
+    sets that field.
+    在下面的例子中，我们使用@Actor来让一个线程在一个字段上忙等，然后用@Signal方法去设置这个字段。
+    JCStress would start actor, and then deliver the signal.
+    JCStress会首先启动actor，然后启动signal.
+    If it exits in reasonable time, it will record "TERMINATED" result, otherwise
+    record "STALE".
+    如果在一定的时间退出，它将会记录"TERMINATED",否则将会记录state。
+    How to run this test:
+       $ java -jar jcstress-samples/target/jcstress.jar -t API_03_Termination
+
+        ...
+
+          RESULT  SAMPLES     FREQ       EXPECT  DESCRIPTION
+           STALE        1   <0.01%  Interesting  Test hung up.
+      TERMINATED   13,168   99.99%   Acceptable  Gracefully finished.
+
+      Messages:
+        Have stale threads, forcing VM to exit for proper cleanup.
+ */
+
+@JCStressTest(Mode.Termination)
+@Outcome(id = "TERMINATED", expect = ACCEPTABLE,             desc = "Gracefully finished.")
+@Outcome(id = "STALE",      expect = ACCEPTABLE_INTERESTING, desc = "Test hung up.")
+@State
+public class API_03_Termination {
+
+    @Actor
+    public void actor1() throws InterruptedException {
+        synchronized (this) {
+            wait();
+        }
+    }
+
+    @Signal
+    public void signal() {
+        synchronized (this) {
+            notify();
+        }
+    }
+}
+```
+
+这里我们不认识的也就是  @Signal，我们看下这个类上的注释:
+
+```java
+/**
+ * {@link Signal} is useful for delivering a termination signal to {@link Actor}  in {@link Mode#Termination} tests.
+ * Signal 被用于 在中断测试中发送中断信号给Actor。
+ *  It will run after {@link Actor} in question  started executing.
+ *  它将会在相应的Actor运行之后开始执行。
+ */
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Signal {
+}
+
+```
 
 
 
 
 
+### API_04_Nesting
 
-## 跑出重排序
+```java
+/*
+It is sometimes convenient to put the tests in the same source file for better comparison. JCStress allows to nest tests like this:
+有时候将一些测试放入一个源文件可以更好的比较，JCStress允许将下面一样嵌套
+
+    How to run this test:
+       $ java -jar jcstress-samples/target/jcstress.jar -t API_04_Nesting
+
+        ...
+
+        .......... [OK] org.openjdk.jcstress.samples.api.APISample_04_Nesting.PlainTest
+
+          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
+            1, 1   21,965,585    4.5%  Interesting  Both actors came up with the same value: atomicity failure.
+            1, 2  229,978,309   47.5%   Acceptable  actor1 incremented, then actor2.
+            2, 1  232,647,044   48.0%   Acceptable  actor2 incremented, then actor1.
+
+        .......... [OK] org.openjdk.jcstress.samples.api.APISample_04_Nesting.VolatileTest
+
+          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
+            1, 1    4,612,990    1.4%  Interesting  Both actors came up with the same value: atomicity failure.
+            1, 2   95,520,678   28.4%   Acceptable  actor1 incremented, then actor2.
+            2, 1  236,498,350   70.3%   Acceptable  actor2 incremented, then actor1.
+ */
+
+public class API_04_Nesting {
+
+    @JCStressTest
+    @Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
+    @Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
+    @Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
+    @State
+    public static class PlainTest {
+        int v;
+
+        @Actor
+        public void actor1(II_Result r) {
+            r.r1 = ++v;
+        }
+
+        @Actor
+        public void actor2(II_Result r) {
+            r.r2 = ++v;
+        }
+    }
+
+    @JCStressTest
+    @Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
+    @Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
+    @Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
+    @State
+    public static class VolatileTest {
+        volatile int v;
+
+        @Actor
+        public void actor1(II_Result r) {
+            r.r1 = ++v;
+        }
+
+        @Actor
+        public void actor2(II_Result r) {
+            r.r2 = ++v;
+        }
+    }
+}
+```
+
+### API_05_SharedMetadata
+
+```java
+/*
+    In many cases, tests share the outcomes and other metadata. To common them,
+    there is a special @JCStressMeta annotation that says to look up the metadata
+    at another class.
+    在一些情况下，测试需要共享输出结果和其他元数据，为了共享他们,有一个特殊的注解@JCStressMeta来指示其他类在另一个类里面查找元数据。
+    How to run this test:
+       $ java -jar jcstress-samples/target/jcstress.jar -t API_05_SharedMetadata
+
+        ...
+
+        .......... [OK] org.openjdk.jcstress.samples.api.APISample_05_SharedMetadata.PlainTest
+
+          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
+            1, 1    6,549,293    1.4%  Interesting  Both actors came up with the same value: atomicity failure.
+            1, 2  414,490,076   90.0%   Acceptable  actor1 incremented, then actor2.
+            2, 1   39,540,969    8.6%   Acceptable  actor2 incremented, then actor1.
+
+        .......... [OK] org.openjdk.jcstress.samples.api.APISample_05_SharedMetadata.VolatileTest
+
+          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
+            1, 1   15,718,942    6.1%  Interesting  Both actors came up with the same value: atomicity failure.
+            1, 2  120,855,601   47.2%   Acceptable  actor1 incremented, then actor2.
+            2, 1  119,393,635   46.6%   Acceptable  actor2 incremented, then actor1.
+ */
+
+@Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
+@Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
+@Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
+public class API_05_SharedMetadata {
+
+    @JCStressTest
+    @JCStressMeta(API_05_SharedMetadata.class)
+    @State
+    public static class PlainTest {
+        int v;
+
+        @Actor
+        public void actor1(II_Result r) {
+            r.r1 = ++v;
+        }
+
+        @Actor
+        public void actor2(II_Result r) {
+            r.r2 = ++v;
+        }
+    }
+
+    @JCStressTest
+    @JCStressMeta(API_05_SharedMetadata.class)
+    @State
+    public static class VolatileTest {
+        volatile int v;
+
+        @Actor
+        public void actor1(II_Result r) {
+            r.r1 = ++v;
+        }
+
+        @Actor
+        public void actor2(II_Result r) {
+            r.r2 = ++v;
+        }
+    }
+}
+```
+
+我们首先来看一下 @JCStressMeta这个注解: 
+
+```java
+/**
+ * {@link JCStressMeta} points to another class with test meta-information.
+ *	@JCStressMeta注解将指向另一个包含测试元信息的类。
+ * <p>When placed over {@link JCStressTest} class, the {@link Description}, {@link Outcome},
+ * {@link Ref}, and other annotations will be inherited from the pointed class. This allows
+ * to declare the description, grading and references only once for a group of tests.</p>
+ *  JCStressMeta 
+ * 当它和@JCStressTest一起出现，@Description、@Outcome、@Ref等其他注解将会从指向的类继承。这样就可以在一组测试中只声明一次描* 述、评分和参考信息
+ */
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface JCStressMeta {
+
+    Class value();
+
+}
+```
 
 
 
+### API_06_Descriptions
 
+```java
+/*
+    JCStress also allows to put the descriptions and references right at the test.
+    This helps to identify the goal for the test, as well as the discussions about
+    the behavior in question.
+	JCStress 还允许将引用和描述放入测试中,这将帮我们认清测试目标, 以及相关问题的讨论
+    How to run this test:
+       $ java -jar jcstress-samples/target/jcstress.jar -t API_06_Descriptions
+ */
 
+@JCStressTest
 
+// Optional test description
+@Description("Sample Hello World test")
+
+// Optional references. @Ref is repeatable.
+@Ref("http://openjdk.java.net/projects/code-tools/jcstress/")
+
+@Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
+@Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
+@Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
+@State
+public class API_06_Descriptions {
+
+    int v;
+
+    @Actor
+    public void actor1(II_Result r) {
+        r.r1 = ++v;
+    }
+
+    @Actor
+    public void actor2(II_Result r) {
+        r.r2 = ++v;
+    }
+}
+```
 
 ## 总结一下
 
@@ -222,7 +601,9 @@ public class IIII_Result implements Serializable {
 
 ## 参考资料
 
+[1] Difference between pre-increment and post-increment in a loop?  https://stackoverflow.com/questions/484462/difference-between-pre-increment-and-post-increment-in-a-loop
 
+[2] Why is i++ not atomic?  https://stackoverflow.com/questions/25168062/why-is-i-not-atomic
 
 
 
