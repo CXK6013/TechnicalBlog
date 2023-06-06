@@ -4,6 +4,8 @@
 >
 > 老师: 因为他们都遵循相同的规律, 我们根据规律就可以预测行为。但你观察到没有在月球上的坠落速度会慢一点。
 
+[TOC]
+
 ## 到底什么是内存模型? 
 
 这里我们来回忆一下《JMM 学习笔记(一) 跨平台的JMM》讲述的东西，在这篇文章里面有两条线, 第一条是硬件性能提升带来的问题，在单核时代，提升CPU的方向是优化架构性能和提升主频速度，但是遗憾的是主频并不能无限制的提升，主频提高过一个拐点之后，功耗会爆炸提升。但我们还需要更强、更快的CPU，多核是一剂良药，引入了多核以后，如何提升CPU运算性能的问题得到了解决，我们就可以通过多核来不断的提升CPU的性能了，某种程度上来说，我们也可以理解为提供给软件的计算资源在不断的增加，那摆在开发者面前的一个问题是如何更好的使用这些计算资源，如何提升计算资源的使用率。我们将结合操作系统的发展历史来回答这个问题。让我们从纸带计算机开始讲起，如下图所示
@@ -93,11 +95,11 @@ main{
 >
 > 平台是程序运行的软件或硬件环境。
 >
->  We've already mentioned some of the most popular platforms like Microsoft Windows, Linux, Solaris OS, and Mac OS. Most platforms can be described as a combination of the operating system and underlying hardware.
+> We've already mentioned some of the most popular platforms like Microsoft Windows, Linux, Solaris OS, and Mac OS. Most platforms can be described as a combination of the operating system and underlying hardware.
 >
 > 我们已经提及了一些广泛使用的平台，像Windows、Linux、Solaris OS、MacOS。大多数平台可以被描述为操作系统和底层硬件的组合。
 >
->  The Java platform differs from most other platforms in that it's a software-only platform that runs on top of other hardware-based platforms.
+> The Java platform differs from most other platforms in that it's a software-only platform that runs on top of other hardware-based platforms.
 >
 > Java平台和其他大多数平台的不同之处在于，它是一个纯软件平台，在其他基于硬件的平台之上运行。
 
@@ -127,7 +129,7 @@ Java的想法是在各个不同的处理器内存模型之间建立一个属于J
 >
 > Java 内存模型是一项雄心勃勃的工作，这是第一次有高级语言试图引入一个内存模型为各种架构的并发性提供一致的语义。
 >
->  Unfortunately, defining a memory model which is both consistent and intuitive proved far more difficult than expected. JSR 133 defines a new memory model for the Java language which fixes the flaws of the earlier memory model. In order to do this, the semantics of final and volatile needed to change.  
+> Unfortunately, defining a memory model which is both consistent and intuitive proved far more difficult than expected. JSR 133 defines a new memory model for the Java language which fixes the flaws of the earlier memory model. In order to do this, the semantics of final and volatile needed to change.  
 >
 > 不幸的是，定义一个一致又直观的内存模型比预想的要困难的多，JSR 133 为Java语言定义了一个新的内存模型，修复了早期内存模型的缺陷。为了做到这一点，final和volatile的语义需要改变。
 >
@@ -189,19 +191,51 @@ Java内存模型的总体目标是:
 
 ![VCwi1A.jpeg](https://i.imgloc.com/2023/06/04/VCwi1A.jpeg)
 
-那一个线程对共享变量的更新在什么情况下对另一个线程可见？ JMM使用happens-before这个术语来回答。
+我们需要注意的是JMM只是一组规范，对于真正的计算机硬件来说，计算机内存只有寄存器、缓存内存、主内存的概念。 不管是工作内存的数据还是主内存的数据，对于真正的计算机硬件来说，可能存储在计算机的主内存中，也有可能存储到CPU缓存或者寄存器中(这句话来自参考文献[5] ，我开始的理解是存在某个数据存在寄存器，不在内存，不在CPU缓存 。 存在某个数据在CPU缓存，不在寄存器，不在内存。这可能与我们的一般理解有所违背，一般的理解是数据分配在主内存存储，CPU需要操作某个变量的时候，该变量会从主内存加载到缓存，然后再到寄存器。但是这句话让我想到了C语言，C语言里面有一个关键字register，可以请求编译器将数据分配到寄存器存储，所以我推测，编译器是否也会将变量直接分配到CPU缓存中进行存储，但是没有找到相关的资料，所以我们姑且就将2)
+
+
+
+那一个线程对共享变量的更新在什么情况下对另一个线程可见？ JMM使用happens-before这个术语来回答。在介绍happens
+
+
+
+
+
+
+
+
 
 ## happens-before
 
-happens发生，before之前，所以happens-before是之前发生，这里我们先换个角度来理解这个概念. 
+The new memory model semantics create a partial ordering on memory operations (read field, write field, lock, unlock) and other thread operations(start and join), where some actions are said to *happen before* other operations.
 
+新的内存模型语义在内存操作(读字段、写字段、锁定、解锁)和其他线程操作(start 和 join)上创建了一个部分排序，其中一些操作被称为发生在其他操作之前，我们姑且就称之为happens-before。
 
+When one action happens before another, the first is guaranteed to be ordered before and visible to the second. The rules of this ordering are as follows:
 
+当一个动作发生在另一个动作之前时，第一个动作被保证在第二个动作之前排序，并且对第二个动作可见。这种排序的规则如下：
 
+- Each action in a thread happens before every action in that thread that comes later in the program's order.
 
-## 进一步详解JMM
+​    **一个线程中，按照程序顺序，前面的操作 Happens-Before 于后续的任意操作**
 
+- An unlock on a monitor happens before every subsequent lock on **that same** monitor.
 
+​	**对一个锁的解锁，happens-before于随后对这个锁的加锁。**
+
+- A write to a volatile field happens before every subsequent read of **that same** volatile.
+
+​    **对一个volatile域的写，happens-before于任意后续对这个volatile域的读**
+
+- A call to `start()` on a thread happens before any actions in the started thread.
+
+  **它是指主线程 A 启动子线程 B 后，子线程 B 能够看到主线程在启动子线程 B 前的操作。**
+
+- All actions in a thread happen before any other thread successfully returns from a `join() `on that thread.
+
+  **如果线程A执行操作ThreadB.join()并成功返回，那么线程B中的任意操作happens-before于线程A从ThreadB.join()操作成功返回。**
+
+我们来解读一下，
 
 
 
@@ -221,12 +255,12 @@ happens发生，before之前，所以happens-before是之前发生，这里我�
 
 ## 参考资料
 
-- 清华 操作系统原理  https://www.bilibili.com/video/BV1uW411f72n?p=8&vd_source=aae3e5b34f3adaad6a7f651d9b6a7799
-- JSR 133 (Java Memory Model)   http://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html
-- 【哈工大】操作系统 李治军（全32讲） https://www.bilibili.com/video/BV19r4y1b7Aw?p=8&vd_source=aae3e5b34f3adaad6a7f651d9b6a7799
+[1] 清华 操作系统原理  https://www.bilibili.com/video/BV1uW411f72n?p=8&vd_source=aae3e5b34f3adaad6a7f651d9b6a7799
 
+[2] SR 133 (Java Memory Model)   http://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html
 
+[3]【哈工大】操作系统 李治军（全32讲） https://www.bilibili.com/video/BV19r4y1b7Aw?p=8&vd_source=aae3e5b34f3adaad6a7f651d9b6a7799
 
+[4]  Happens-Before原则深入解读  https://juejin.cn/post/7124504859247804424
 
-
-
+[5]  Java 并发编程之 JMM & volatile 详解 https://juejin.cn/post/6916331359258542087#heading-7
