@@ -4,7 +4,7 @@
 
 ## 前言
 
-我们前文提到，当我们对理论有一些了解，我们就渴望验证，如果无法对理论进行验证，那么我们就可能对理论将信将疑，那对于Java领域的并发理论，一向是难以测试的，更何况调试， 这不仅仅是我们的认知，OpenJDK的开发者也是这么认知的:
+我们前文提到，当我们对理论有一些了解，我们就渴望验证，如果无法对理论进行验证，那么我们就可能对理论将信将疑，那对于Java领域的并发理论，一向是难以测试的，更何况调试， 这不仅仅是我们的认知，OpenJDK的	者也是这么认知的:
 
 > Circa 2013 (≈ JDK 8) ， we suddenly realized there are no regular concurrency tests that ask hard questions about JMM conformance
 >
@@ -261,13 +261,35 @@ for循环的括号是个小代码块，第一次执行的时候首先声明了�
 
 > Android Studio — Flamingo | 2022.2.1 — Hedgehog | 2023.1.1 Canary 2
 
-如果你的IDEA里面没搜到这个插件，那就说明没适配，然后请升级一下IDEA的版本，在运行上面这个例子之前我们首先要引入一下maven依赖:
+本来这个插件跑的是好好的，但是我换了台机器就发现好像有点问题，还是用命令行吧，首先我们去GitHub将源码下载下来:
 
+```http
+https://github.com/openjdk/jcstress.git
 ```
 
+编译JCStress这个项目的master分支最好是JDK 17，我试了其他版本，发现都会有点奇奇怪怪的问题，我们先不必深究这些问题，先跑出来结果再说. 首先我们在命令行执行：
+
+```java
+mvn clean install -DskipTests -T 1C
 ```
 
+本篇的例子来自于JCStress tag中的0.3，但是跑JCStress测试的时候，发现0.3上好像有点水土不服，但提供的例子都是差不多，基本没变化。这里跑测试的时候，用的就是master分支下面的示例，我们来跑下示例:
 
+```java
+java -jar jcstress-samples/target/jcstress.jar -t API_01_Simple
+```
+
+![VZuzyU.jpeg](https://i.328888.xyz/2023/05/15/VZuzyU.jpeg)
+
+跑完测试之后，测试报告会会出现在results文件夹下面:
+
+![VZuGqy.jpeg](https://i.328888.xyz/2023/05/15/VZuGqy.jpeg)
+
+我们打开看下测试报告:
+
+![VZuKyE.jpeg](https://i.328888.xyz/2023/05/15/VZuKyE.jpeg)
+
+运行的次数比我们想象的要多，1877050次。
 
 ## 例子解读
 
@@ -387,10 +409,6 @@ public @interface Signal {
 }
 
 ```
-
-
-
-
 
 ### API_04_Nesting
 
@@ -551,8 +569,6 @@ public @interface JCStressMeta {
 }
 ```
 
-
-
 ### API_06_Descriptions
 
 ```java
@@ -594,6 +610,22 @@ public class API_06_Descriptions {
 ```
 
 ## 总结一下
+
+本篇我们介绍的JCStress注解有:
+
+- @JCStressTest  标定这个类需要被JCStress测试
+- 输入参数 II_Result 用于记录测试结果 ，这个类型的结果几个I，就是由几个变量，记录的结果最后会被用逗号拼接，然后和outcome注解的id来匹配。
+- Outcome 的id属性用于设置我们希望测出来的结果，expect 用于标定测试等级。
+- @Actor 标定的方法 会被一个线程执行，只有类上出现了@State，类上的方法才可以允许出现@Actor注解。
+-  @Arbiter 在actor方法之后执行
+- @Signal 被用于在中断测试中发送中断信号给Actor。
+- 你也可以将一些测试放在一个类中
+- 有的时候 你想做的并发测试，预期输出结果都一样，我们可以用@JCStressMeta注解，共享属性。
+- 有的时候我们也想和别人讨论并发问题，并希望在测试输出的文档中附带参考链接和描述，我们可以用@Ref和@Description。
+
+## 写在最后
+
+这个框架倒是我头一次只看官方文档，根据例子写的教程，探索的过程倒是摔了不少跟头，刚开始不想用命令行，想用IDEA的一个插件JCStress来跑，换了一台电脑之后，发现这个插件有点水土不服，本来想看下问题出在哪里，但是想想要花不少的时间，这个想法也就打消了。其实本篇还打算介绍一下线程中断机制，但是感觉这个内容一篇之内也介绍不完，所性也砍了，本来想解读测试报告的时候，把JCStress的执行机制也顺带介绍一下，Java的两个编译器C1、C2。但是刚敲几个字就发现也是不小的篇幅，所性也砍了。后面我们介绍JMM，将用JCStress来验证我们的猜想。
 
 
 

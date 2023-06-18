@@ -45,19 +45,19 @@ int main(int argc , char* argv[])
 
 然后我们以命令行方式启动这个程序:
 
-![C语言执行](https://github.com/CXK6013/TechnicalBlog/assets/45529222/0ee0ac4a-d899-435e-819f-0a24076af254)
+![V2hQnt.png](https://i.imgloc.com/2023/06/10/V2hQnt.png)
 
 
 然后我们将语句二注释，将语句一解除注释，看下执行效果:
 
-![C语言注释语句二](https://github.com/CXK6013/TechnicalBlog/assets/45529222/56bd8458-debf-4609-a705-823c4c8e20c4)
+![V2hYRJ.png](https://i.imgloc.com/2023/06/10/V2hYRJ.png)
 
 
 我们可以看到循环次数上升，只是将I/O语句注释，速度得到了飞快的提升，就几乎不需要花费时间一样，我执行了十几次，我将循环的次数提升到了1000w，但是速度仍然很快。我们来计算下语句二不注释的情况下，平均每次循环执行的时间是0.003/10^4^,  那我们将语句二注释换成语句一，那么花费的时间，由于分子是0，那么可以认为不需要花费时间？ 可能有朋友觉得还是不够直观我们就姑且取时间为10^-8^ , 然后我们的循环次数是10^8^, 那么花费的时间就是1 / 10^16^,  我们可以看到相差的数量级。0.003/10^4^是有I/O指令花费的时间。两者的比例近似在1:3 × 10^9^, 可以看到有I/O指令会非常慢, 换句话说一条I/O指令所花费的时间够计算指令执行3×10^9^次， 假设我们有如下一个程序: 
 
-![image-20230602173830269](https://github.com/CXK6013/TechnicalBlog/assets/45529222/b8a6a90d-50c4-4c7d-80a4-34e98fc59e81)
+![V25ijo.png](https://i.imgloc.com/2023/06/10/V25ijo.png)
 
-蓝色区域的代表有3×10^9^条计算指令，绿色部分代表有一条I/O指令，处理器在执行完计算指令之后，就发出I/O指令，等磁盘上写入或从磁盘上读取，在这段时间内CPU处于空闲状态，利用率也就是百分之之五十，但实际的程序中我们碰到的问题可能是三十条计算指令，一条I/O指令，二十条计算指令，一条I/O指令，换句话说，如果计算机只能执行一个程序，那么CPU的使用率接近于零，换言之软件并没有享受到计算能力的提升，那我们该如何提升呢，答案就是并发，交替的执行程序，在等待I/O指令的时候，CPU切换到了其他程序上进行执行。就像我们取烧热水一样，我们将水灌进热水壶之后，打开开关，我们就会取做别的事情。那交替的执行会带来什么问题，我们先在有两个程序，都加载进了计算机开始执行: 
+蓝色区域的代表有3×10^9^条计算指令，绿色部分代表有一条I/O指令，处理器在执行完计算指令之后，就发出I/O指令，等磁盘上写入或从磁盘上读取，在这段时间内CPU处于空闲状态，利用率也就是百分之之五十，但实际的程序中我们碰到的问题可能是三十条计算指令，一条I/O指令，二十条计算指令，一条I/O指令，换句话说，如果计算机只能执行一个程序，那么CPU的使用率接近于零，换言之软件并没有享受到计算能力的提升，那我们该如何提升呢，答案就是并发，交替的执行程序，在等待I/O指令的时候，CPU切换到了其他程序上进行执行。就像我们去烧热水一样，我们将水灌进热水壶之后，打开开关，我们就会去做别的事情。那交替的执行会带来什么问题，我们先在有两个程序，都加载进了计算机开始执行: 
 
 ![V0MJPE.jpeg](https://i.imgloc.com/2023/06/03/V0MJPE.jpeg)
 
@@ -191,67 +191,305 @@ Java内存模型的总体目标是:
 
 ![VCwi1A.jpeg](https://i.imgloc.com/2023/06/04/VCwi1A.jpeg)
 
-我们需要注意的是JMM只是一组规范，对于真正的计算机硬件来说，计算机内存只有寄存器、缓存内存、主内存的概念。 不管是工作内存的数据还是主内存的数据，对于真正的计算机硬件来说，可能存储在计算机的主内存中，也有可能存储到CPU缓存或者寄存器中(这句话来自参考文献[5] ，我开始的理解是存在某个数据存在寄存器，不在内存，不在CPU缓存 。 存在某个数据在CPU缓存，不在寄存器，不在内存。这可能与我们的一般理解有所违背，一般的理解是数据分配在主内存存储，CPU需要操作某个变量的时候，该变量会从主内存加载到缓存，然后再到寄存器。但是这句话让我想到了C语言，C语言里面有一个关键字register，可以请求编译器将数据分配到寄存器存储，所以我推测，编译器是否也会将变量直接分配到CPU缓存中进行存储，但是没有找到相关的资料，所以我们姑且就将2)
+我们需要注意的是JMM只是一组规范，对于真正的计算机硬件来说，计算机内存只有寄存器、缓存内存、主内存的概念。
 
+> 不管是工作内存的数据还是主内存的数据，对于真正的计算机硬件来说，可能存储在计算机的主内存中，也有可能存储到CPU缓存或者寄存器中  来自参考文献5
 
+ 我开始的理解是存在某个数据存在寄存器，不在内存，不在CPU缓存 。 存在某个数据在CPU缓存，不在寄存器，不在内存。这可能与我们的一般理解有所违背，一般的理解是数据分配在主内存存储，CPU需要操作某个变量的时候，该变量会从主内存加载到缓存，然后再到寄存器。但是这句话让我想到了C语言，C语言里面有一个关键字register，可以请求编译器将数据分配到寄存器存储，所以我推测，编译器是否也会将变量直接分配到CPU缓存中进行存储，但是没有找到相关的资料，我们还是将其理解为数据从主内存加载，然后加载到CPU缓存，然后加载到寄存器中。 当然一些贴近机器的语言，也提供了将变量直接分配进寄存器的选项。
 
-那一个线程对共享变量的更新在什么情况下对另一个线程可见？ JMM使用happens-before这个术语来回答。在介绍happens
+工作内存同步到主内存之间的实现细节，JMM定义了以下八种操作：
 
+![V2E0mo.jpeg](https://i.imgloc.com/2023/06/10/V2E0mo.jpeg)
 
+如果要把一个变量从主内存中复制到工作内存中，就需要按顺序地执行read和load操作，如果把变量从工作内存中同步到主内存中，就需要按顺序地执行store和write操作。但Java内存模型只要求上述操作必须按顺序执行，而没有保证必须是连续执行。
 
+![V2GdqU.jpeg](https://i.imgloc.com/2023/06/10/V2GdqU.jpeg)
 
+- **同步规则分析**
 
+（1）不允许一个线程无原因地（没有发生过任何assign操作）把数据从工作内存同步回主内存中。
 
+（2）一个新的变量只能在主内存中诞生，不允许在工作内存中直接使用一个未被初始化（load或者assign）的变量。即就是对一个变量实施use和store操作之前，必须先自行assign和load操作。
 
+（3）一个变量在同一时刻只允许一条线程对其进行lock操作，但lock操作可以被同一线程重复执行多次，多次执行lock后，只有执行相同次数的unlock操作，变量才会被解锁。lock和unlock必须成对出现。
 
+（4）如果对一个变量执行lock操作，将会清空工作内存中此变量的值，在执行引擎使用这个变量之前需要重新执行load或assign操作初始化变量的值。
+
+（5）如果一个变量事先没有被lock操作锁定，则不允许对它执行unlock操作；也不允许去unlock一个被其他线程锁定的变量。
+
+（6）对一个变量执行unlock操作之前，必须先把此变量同步到主内存中（执行store和write操作）。
+
+对于可见性和有序性问题，Java 内存模型则使用happens-before这个术语来解答。
 
 ## happens-before
 
-The new memory model semantics create a partial ordering on memory operations (read field, write field, lock, unlock) and other thread operations(start and join), where some actions are said to *happen before* other operations.
+> The new memory model semantics create a partial ordering on memory operations (read field, write field, lock, unlock) and other thread operations (start and join), where some actions are said to happen before other operations. 
 
-新的内存模型语义在内存操作(读字段、写字段、锁定、解锁)和其他线程操作(start 和 join)上创建了一个部分排序，其中一些操作被称为发生在其他操作之前，我们姑且就称之为happens-before。
+> 新的内存模型在内存操作(读字段、写字段、锁定、解锁)和其他线程操作(启动和加入)上创建了一个部分有序性，其中一些操作被认为先于其他操作之前发生(也就是happens-before)。
 
-When one action happens before another, the first is guaranteed to be ordered before and visible to the second. The rules of this ordering are as follows:
+> When one action happens before another, the first is guaranteed to be ordered before and visible to the second. The rules of this ordering are as follows:
 
-当一个动作发生在另一个动作之前时，第一个动作被保证在第二个动作之前排序，并且对第二个动作可见。这种排序的规则如下：
+>  当一个操作在另一个操作之前先行发生时(可以理解为一个操作happens-before)， 第一个操作保证在第二个操作之前被排序和可见。
+
+这里我们重点理解一下这个partial ordering 局部有序，存在一些操作是要排在一些操作之前，这也就是happens-before。那哪些操作存在这样的关系呢, 我们先简单的看一个规则，**程序次序规则**(Program Order rule): 
 
 - Each action in a thread happens before every action in that thread that comes later in the program's order.
 
-​    **一个线程中，按照程序顺序，前面的操作 Happens-Before 于后续的任意操作**
+> 在一个线程内，按照控制流顺序，书写在前面的操作先行发生于书写在后面的操作。
 
-- An unlock on a monitor happens before every subsequent lock on **that same** monitor.
+这是符合我们的直觉的，我们再读一下上面的话: 
 
-​	**对一个锁的解锁，happens-before于随后对这个锁的加锁。**
+> When one action happens before another, the first is guaranteed to be ordered before and visible to the second. 
+>
+> 当一个操作先行发生于另一个操作，第一个操作保证在第二个操作之前被排序和可见。
 
-- A write to a volatile field happens before every subsequent read of **that same** volatile.
+我们可以将这句话理解为，一个线程内指令的执行顺序和程序的书写顺序是一致的嘛？ 当然不可以，我的理解是相对有序，好像是按顺序执行的: 
 
-​    **对一个volatile域的写，happens-before于任意后续对这个volatile域的读**
+```java
+public static void main(String[] args){
+     Student student = new Student(); // 语句一
+     System.out.println(student); // 语句二
+}
+```
 
-- A call to `start()` on a thread happens before any actions in the started thread.
+语句一happens-before语句二，我们知道一个对象的产生，要经历三步:
 
-  **它是指主线程 A 启动子线程 B 后，子线程 B 能够看到主线程在启动子线程 B 前的操作。**
+① 首先为Student 对象分配内存
 
-- All actions in a thread happen before any other thread successfully returns from a `join() `on that thread.
+② 调用 Student  的构造函数来初始化成员变量
 
-  **如果线程A执行操作ThreadB.join()并成功返回，那么线程B中的任意操作happens-before于线程A从ThreadB.join()操作成功返回。**
+③ 将student变量 指向分配的内存
 
-我们来解读一下，
+JVM在执行的时候，发现2和3没有依赖关系，执行顺序就可能是①③②，也可能是①②③，那么无论是哪种执行顺序，根据程序次序规则，语句二拿到的对象就好像是①②③执行一样，规则并没有强制要求执行顺序，这会损害性能。再举一个例子, 在这个例子中我们用可见性来描述有序性，换句话说从可见性描述有序性也就是再说，最后看到的结果，一个处理器最后看到另一个处理器对共享变量的操作产生的结果，好像是顺序操作产生的, 顺序操作理解起来更为简单，即使编译器和处理器进行了内存重排， 假设处理器0、处理器1上两个线程按照下表所示的交错顺序执行，X、Y、Z和ready为共享变量，r1，r2，r3为局部变量。
+
+![V2zwQq.jpeg](https://i.imgloc.com/2023/06/10/V2zwQq.jpeg)
+
+进一步假设，Process 1读取到变量ready的值时，S1、S2、S3、S4的操作结果均已经提交完毕，并且L2、L3不会与L1进行重排序，那么此时S1、S2、S3和S4的操作结果对L1及其以后的L2和L3都是可见的。因此，从L1、L2和L3的角度来看此时S1、S2和S3就好像是被Process 0上的线程依照程序顺序执行一样，即S1、S2、S3和S4对于L1、L2和L3是有序的。尽管Process 0 可能会对S1、S2、S3和S4时可能进行指令重排，但是只要Process 1 开始执行L1时，S1、S2、S3和S4的操作结果已经提交完毕，即这些操作的结果同时对L1可见，那么S1、S2、S3和S4在L1、L2看来就是有序的。 
+
+接着我们来理解第二条规则，管程锁定规则 **（Monitor Lock Rule）**: 一个unlock操作先行发生于后面对同一个锁的lock操作。 读到这里可能会有疑问，怎么先unlock，再lock，不应该是先lock再unlock嘛，就没锁门，你拿个钥匙开个什么劲。之所以有这个疑问，是因为把“先行发生”理解为一种主动的规则要求，而先行发生事实上是程序运行时的客观结果，正确的解读方式是这样的，对于“同一把锁”， 如果在程序运行过程中“一个unlock”操作先行发生于对同一把锁的lock操作， 那么该unlock操作所产生的影响(修改共享变量的值、发送了消息、调用了方法)，对于该lock操作是可见的。我们结合代码来理解这个规则: 
+
+```java
+// 这个例子来自参考文档 [4]
+public class WithoutMonitorLockRule {
+    private static boolean stop = false;
+
+    public static void main(String[] args) {
+        Thread updater = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                stop = true;
+                System.out.println("updater set stop true");
+            }
+        }, "updater");
+
+        Thread getter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    if (stop) {
+                        System.out.println("getter stopped");
+                        break;
+                    }
+                }
+            }
+        }, "getter");
+        getter.start();
+        updater.start();
+    }
+}
+```
+
+程序输出结果是updater set stop true，说明getter线程对共享变量的修改对getter不可见。我们在使用锁，来来试试看, 如下所示: 
+
+```java
+// 这个例子来自参考文档 [4]
+public class MonitorLockRuleSynchronized {
+    private static boolean stop = false;
+    private static final Object lockObject = new Object();
+
+    public static void main(String[] args) {
+        Thread updater = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                synchronized (lockObject) {
+                    stop = true;
+                    System.out.println("updater set stop true.");
+                }
+            }
+        }, "updater");
+
+        Thread getter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    synchronized (lockObject) {
+                        if (stop) {
+                            System.out.println("getter stopped.");
+                            break;
+                        }
+                    }
+                }
+            }
+        }, "getter");
+        updater.start();
+        getter.start();
+    }
+}
+```
+
+程序输出结果为：updater set stop true.  getter stopped.。 这印证了管程锁定规则，，对于“同一把锁”， 如果在程序运行过程中“一个unlock”操作先行发生于对同一把锁的lock操作， 那么该unlock操作所产生的影响(修改共享变量的值、发送了消息、调用了方法)，对于该lock操作是可见的。剩余的规则如下：
+
+- **volatile变量规则**：对于同一个volatile变量，如果对于这个变量的写操作先行发生于这个变量的读操作，那么对于这个变量的写操作所产的影响对于这个变量的读操作是可见的。
+
+- **线程启动规则**：对于同一个Thread对象，该Thread对象的start()方法先行发生于此线程的每一个动作，也就是说对线程start()方法调用所产生的影响对于该线程的每一个动作都是可见的。
+
+- **线程终止规则**：对于一个线程，线程中发生的所有操作先行发生于对此线程的终止检测，也就是说线程中的所有操作所产生的影响对于调用线程Thread.join()方法或者Thread.isAlive()方法都是可见的。
+
+- **线程中断规则**：对于同一个线程，对线程interrupt()方法的调用先行发生于该线程检测到中断事件的发生，也就是说线程interrupt()方法调用所产生的影响对于该线程检测到中断事件是可见的。
+
+- **对象终结规则**：对于同一个对象，它的构造方法执行结束先行发生于它的finalize()方法的开始，也就是说一个对象的构造方法结束所产生的影响，对于它的finalize()方法开始执行是可见的。
+
+- **传递性**：如果操作A先行发生于操作B，操作B先行发生于操作C，则操作A先行发生于操作C，也就说操作A所产生的所有影响对于操作C是可见的。
+
+这里讲一下volatile，这是Java内置的关键字，三年前我们就在《今天我们来聊聊单例模式和枚举》遇见了，在单例模式那里，我们使用volatile来禁止指令重排序，这里我们又理解了它的一个作用，可以用于修饰共享变量，在以前我不理解，volatile的作用，当一个变量被volatile修饰，B线程读取了这个共享变量，加载到自己的工作内存 ,  刚加载完，然后时间片耗尽，A线程更新了共享变量，B线程还怎么读到A线程更新的值，这里就要探究volatile的实现了，本篇不做探索，简单的说就是，当volatile变量被修改时，其他CPU的缓存行会失效，CPU会不断对总线进行内存嗅探，如果滥用volatile可能会引起总线风暴(我在想该如何验证这个说法)，除此之外，大量的CAS操作也会引发这个问题。我们不用锁，使用volatile修饰stop，也能输出updater set stop true.  getter stopped。
+
+```java
+public class VolatileRule {
+    private volatile static boolean stop = false;
+
+    public static void main(String[] args) {
+        Thread updater = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                stop = true;
+                System.out.println("updater set stop true");
+            }
+        }, "updater");
+
+        Thread getter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    if (stop) {
+                        System.out.println("getter stopped");
+                        break;
+                    }
+                }
+            }
+        }, "getter");
+        getter.start();
+        updater.start();
+    }
+}
+```
+
+volatile变量还有一个说是特点，其实也不是的特性。如下代码并未将stop变量用volatile修饰，而是用volatile修饰了volatileObject变量，如下所示:
+
+```java
+public class VolatileRule1 {
+    
+    private static  boolean stop = false;
+    
+    private static volatile Object volatileObject = new Object();
+
+    public static void main(String[] args) {
+        Thread updater = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimeUnit.SECONDS.sleep(1);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                stop = true;
+                volatileObject = new Object();
+                System.out.println("updater set stop true.");
+            }
+        }, "updater");
+
+        Thread getter = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    Object volatileObject = VolatileRule1.volatileObject;
+                    if (stop) {
+                        System.out.println("getter stopped.");
+                        break;
+                    }
+                }
+            }
+        }, "getter");
+        updater.start();
+        getter.start();
+    }
+}
+```
+
+也能得到：updater set stop true.  getter stopped.。 这个结果。 这看起来颇为神奇，我们结合传递性和程序顺序规则进行分析，在updater线程内，根据程序顺序规则，stop = true先于 volatileObject = new Object()， 而在getter线程内，对volatileObject的读取先于读取stop变量，所以stop = true 先行发生于if(stop) , 所以stop = true 对于if(stop) 就是可见的。
+
+看到这里可能有同学就会问了，这不就是传递性和程序顺序规则嘛，怎么能算上volatile 的特点呢？  这里我们再来读一下volatile规则:
+
+> 对于同一个volatile变量，如果对于这个变量的写操作先行发生于这个变量的读操作，那么对于这个变量的写操作所产的影响对于这个变量的读操作是可见的。
+
+如果volatileObject上没有volatile，这个传递性就传不过来，我们再捋一下，在updater线程内，根据程序顺序规则，对stop变量的更新先行发生于对volatileObject的更新，而在getter线程内对volatileObject的读取先于对stop的读取, 那么在根据volatile规则，对volatile变量的写操作先行发生于这个变量的读操作:
+
+![V2GfQv.jpeg](https://i.imgloc.com/2023/06/10/V2GfQv.jpeg)
 
 
 
-## 其他语言需要内存模型嘛？
+ 如果valueObject没被volatile修饰，就传不过来。利用此特性的一个典型例子在jdk的FutureTask，下面的代码来自FutureTask:
 
+```java
+private volatile int state;
+ // non-volatile, protected by state reads/writes 
+没有被volatile修饰，被state变量读写保护
+private Object outcome;
+```
 
+## 其他语言有内存模型嘛？
 
+> Most other programming languages, such as C and C++, were not designed with direct support for multithreading. 
 
+> 像其他语言，比如C和C++，在设计时不被直接支持多线程。
+
+> The protections that these languages offer against the kinds of reorderings that take place in compilers and architectures are heavily dependent on the guarantees provided by the threading libraries used (such as pthreads),  the compiler used, and the platform on which the code is run. 
+
+> 这些语言对发生在编译器和架构中的重排的保护很大程度取决于所使用得线程库(如pthread)、所使用的编译器以及代码运行的平台所提供保证。 《JSR 133 (Java Memory Model) FAQ》
+
+总结一下其他语言没有承诺跨平台，语言原生就没有支持多线程，所以也不需要建立一个自己的内存模型来屏蔽系统和架构差异。
+
+## 总结一下
+
+总结Java memory model 是什么？ 我们回忆一下《JMM 学习笔记(一) 跨平台的JMM》中我们已经谈到了什么是模型？ 
+
+> 模型是指对于某个实际问题或客观事物、规律进行抽象后的一种形式化表达方式。
+
+而计算机在发展过程中，引入多核整体提升CPU性能，引入进程增大CPU的利用率，引入线程更好的共享变量，而引入线程操作共享变量再碰上多核心，就会碰到下面三个问题: 
+
+- 可见性:  一个线程对共享变量的更新在什么情况下对另一个线程可见。可见性是有序性的基础
+- 有序性: 描述的是一个处理器上运行的线程对共享变量做所的更新，在其他处理上运行的其他线程是以什么样的顺序观察到这些更新。
+- 原子性: 访问某个共享变量的操作从其执行线程以外的任何线程来看，该操作要么已经执行结束，要么尚未发生，即其他线程不会“看到” 该操作的中间效果
+
+Java面对的是形形色色的硬件，有的CPU是强内存模型，有的CPU是弱内存模型，而Java身上的特点就是跨平台，该怎么做到跨平台，Java的选择是建立自己的内存模型，在强和弱之间，选择了自己的模型，给出一组规则回答可见性这个并发的最根本问题，根据这些规则我们可以推测出在各个平台上的行为，以这种方式做到跨平台。就像是开篇写的，在月球上物体会下落，在地球上物体也会下落，但是下落的速度不同，这是物理规律的均匀性。而JMM的规则在各个平台上也具备这种均匀性。
 
 ## 写在最后
 
-
-
-
-
-
+JDK 9开始对JMM进行调整，但不要担心，没有做破坏性更新，依旧兼容从前，我原本想在这一篇一口气把这些都介绍，但是发现文章篇幅已经很大了，我总是雄心勃勃想在一篇文章将一切都将清楚，但是想做的东西太多，有的时候我可能潜意识里面也畏惧这么多内容，有的时候甚至畏惧开始写这方面的内容。于是我将JDK 9之上，JMM做的调整移动到下一篇。以前我不懂JMM提供的happens-before规则，但也不影响我使用并发编程，原因在于JMM的happens-before规则也是贴合直觉的。操作系统的课程在B站看了两个《【哈工大】操作系统 李治军（全32讲）》、《清华 操作系统原理》，李治军老师讲进程的时候，是从提升CPU的利用率来说的，《清华 操作系统原理》是从系统要运行两个相同的程序来说的，感觉引出进程这个概念来说，李治军老师讲的更好。 在写这篇文章的时候，也一直在回溯自己关于对操作系统的理解，讲多线程、多进程，不仅仅从语言本身来说，总体站在操作系统的角度来说，很多问题不能仅仅从语言本身来说，思路容易狭窄。
 
 ## 参考资料
 
