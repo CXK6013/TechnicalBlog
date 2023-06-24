@@ -8,7 +8,7 @@
 
 - Maven学习笔记 https://segmentfault.com/a/1190000019897882
 
-   不懂JDBC，我还写JDBC相关的文章，哈哈，可以在B站上随手搜个视频看下。照以往文章的思路肯定是先讲下使用原生JDBC的痛点，然后引出ORM框架，但是本篇想换个思路，我们先用起来，在实践中体会Hibernate带给我们的便利，现在我们将Hibernate理解为一个ORM框架，给我们提供了一组API，可以让我们方便快捷的实现CRUD。
+   不懂JDBC，哈哈，可以在B站上随手搜个视频看下。照以往文章的思路肯定是先讲下使用原生JDBC的痛点，然后引出ORM框架，但是本篇想换个思路，我们先用起来，在实践中体会Hibernate带给我们的便利，现在我们将Hibernate理解为一个ORM框架，给我们提供了一组API，可以让我们方便快捷的实现CRUD。
 
 ## 先用起来
 
@@ -24,7 +24,7 @@
 
 
 
-我本来想介绍6.2版本的，但是6.2最低是JDK 11，5.6最低是JDK 1.8，那这里就介绍两个版本，5.6和6.2。 我们先开始用，首先我们引入maven依赖:
+我本来想介绍6.2版本的，但是6.2最低是JDK 11，5.6最低是JDK 1.8，那这里就介绍5.6版本。 我们先开始用，首先我们引入maven依赖:
 
 ```xml
  <dependency>
@@ -241,7 +241,7 @@ public class NativeApiIllustrationTest extends TestCase {
 
 ![VjZHgd.jpeg](https://i.imgloc.com/2023/06/17/VjZHgd.jpeg)
 
-我们已经用Hibernate完成了表的创建、新增数据、查询数据。 我们来分析一个流程。
+我们已经用Hibernate完成了表的创建、新增数据、查询数据。 我们来分析一下这个流程。
 
 ## 梳理流程
 
@@ -306,16 +306,220 @@ The Java Persistence API provides Java developers with an object/relational mapp
 
 总结一下，JPA 是一组接口，提供了操作数据库的API，而Hibernate提供了实现。Hibernate提供了两方面的能力，一方面是JPA的实现，另一方面是Hibernate自己提供的能力。我们先看Hibernate提供的能力，再看JPA的实现。
 
-## HQL
+###  简单介绍JDBC
 
+软件的世界有着形形色色的关系型数据库，这些数据库天生的存在差异，虽然他们都遵循一个标准，但是也有自己的实现。那Java该如何操作各个数据库呢，由JDK的维护人员为每个数据库都开发一个SDK，开发人员需要哪个数据库，就去找哪个数据库的SDK?  那是为每一个数据库都专门设计一套工具包，还是每个数据库的SDK都是由一组规范约束，每个数据库的SDK实现了规范，但是实现不同。当然是每个数据库的SDK由一组规范约束，能够减少开发者的心智负担更好，那为什么JDK的开发人员不给规范呢？ 为什么不让各大数据库厂商给实现呢？ Java中的接口就可以当作规范，所以JDK的开发人员就给了一组接口，也就是JDBC:
 
+> Java DataBase Connectivity   API为Java提供了访问各种数据源的通用数据访问方式。通过JDBC API你可以几乎访问任何数据源，包括关系型数据库，excel，二进制格式的文件。JDBC包括两个包:
+>
+> - java.sql
+> - javax.sql
+>
+> 要使用JDBC API与特定的数据库进行交互，你需要一个基于JDBC技术的驱动程序来作为数据库和JDBC之间的中介。 驱动程序可以完全使用Java语言来编写，也可以使用Java编程语言和JNI的混合形式来编写。
 
+![VIURKx.jpeg](https://i.imgloc.com/2023/06/22/VIURKx.jpeg)
 
+那现在来说操纵数据的方法有了，那么从数据里面查出来的数据怎么变成Java的类呢，我们还要解决的问题就是，数据库的类型和Java数据类型的映射关系，JDBC定义了数据库的基本数据类型，是一个枚举，叫JDBCType，位于java.sql，但是具体数据库的类型应该对应Java中的什么类型，不同的数据库有不同的答案，MyBatis的答案参看下面这个页面:
+
+- https://mybatis.org/mybatis-3/zh/configuration.html#typeHandlers
+
+我们可以看到MyBatis的答案基本是符合我们直觉的，BOOLEAN对boolean，Byte对Byte。由不同的类型处理器帮我们将对应的数据库数据类型转换成Java对应的数据类型。那Hibernate是如何处理的呢？
+
+### Hibernate的答案是
+
+这次我们也依然看例子，再介绍理念，要操作数据库，首先我们要有一张表:
+
+```sql
+create table Contact (
+    id integer not null,
+    first varchar(255),
+    last varchar(255),
+    middle varchar(255),
+    notes varchar(255),
+    starred boolean not null,
+    website varchar(255),
+    primary key (id)
+)
+```
+
+然后我们需要有一个实体类:
+
+```java
+@Entity(name = "Contact")
+public static class Contact {
+
+	@Id
+	private Integer id;
+
+	private Name name;
+
+	private String notes;
+
+	private URL website;
+
+	private boolean starred;
+
+	//Getters and setters are omitted for brevity
+}
+
+@Embeddable
+public class Name {
+
+	private String firstName;
+
+	private String middleName;
+
+	private String lastName;
+
+	// getters and setters omitted
+}
+```
+
+在Hibernate中，Contact中的所有字段被称为值类型，值类型又分为三种: 基本类型，嵌入类型，集合类型。 在Contact类里除了name，都被映射到Contact表里，这些就是基本类型。name属性被称为嵌入类型。集合类型并没有在上面的例子中出现，但集合类型也是值类型中的一个独特类型。
+
+#### 值类型
+
+##### 基本类型
+
+所谓基本类型，数据库类型到Java类型的映射，通常是单个数据库列，Hibernate内置了一些基本类型，我们简单介绍几个:
+
+![VIUp3L.jpeg](https://i.imgloc.com/2023/06/22/VIUp3L.jpeg)
+
+这些类型映射由Hibernate中的BasicTypeRegistry进行处理。
+
+##### 嵌入类型
+
+ 在一个实体类里，如果某个字段的类型是由另一个实体类，那么这个实体类，我们就称之为嵌入类型。
+
+##### 集合类型
+
+Hibernate也允许持久性集合，持久化集合里面可以容纳任何其他Hibernate类型，如下所示:
+
+```java
+@Entity(name = "Person")
+public static class Person {
+
+	@Id
+	private Long id;
+
+	@ElementCollection
+	private List<String> phones = new ArrayList<>();
+    
+	//Getters and setters are omitted for brevity
+}
+Person person = entityManager.find( Person.class, 1L );
+//Throws java.lang.ClassCastException: org.hibernate.collection.internal.PersistentBag cannot be cast to java.util.ArrayList
+ArrayList<String> phones = (ArrayList<String>) person.getPhones()
+```
+
+#### 实体类型简介
+
+实体类型简单的说也就是Java中的类，由值类型组成，需要一个唯一标识符，Contact就是一个简单示例。要进行对关系型数据库进行CRUD，我们首先要有一个表, 但是在Hibernate里面，我们可以指定自动创建表，只用建立实体类即可:
+
+```java
+@Entity
+@Table(name = "person")
+public class Person {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY )
+    private Long id;
+
+    private String name;
+
+    private String nickName;
+
+    private String address;
+	
+    // 这个字段用于将Java的日期类型映射到数据库的类型
+    @Temporal(TemporalType.TIMESTAMP )
+    private Date createdOn;
+
+    @Version
+    private int version;
+    //Getters and setters are omitted for brevity
+}
+
+```
+
+在mapping里指定这个实体类，即能够根据实体类实现建表:
+
+```xml
+ <mapping class="org.example.tutorial.hbm.entity.Person"></mapping>
+```
+
+## 使用Hibernate进行CRUD
+
+有了这些关系，我们就开始CRUD吧。
+
+### CREATE、DELETE 、 UPDATE
+
+我们的第一个例子就是新增，Hibernate中还支持其他写法:
+
+```java
+int insertedEntities = session.createQuery(
+	"insert into Partner (id, name) " +
+	"select p.id, p.name " +
+	"from Person p ")
+.executeUpdate();
+```
+
+删除更新的也可以通过在createQuery方法的参数中指定SQL，来实现删除和更新:
+
+```java
+session.createQuery("update from Person set address = :address  where id = :id")
+                .setParameter("id",2L).
+                 setParameter("address","测试修改").executeUpdate();
+session.createQuery("delete from Person where id = :id").setParameter("id",1L).executeUpdate();
+```
+
+这里注意在createQuery里写的SQL，from后面要跟实体名，Hibernate会自动寻找实体上table注解对应的表名，不能写表名。:参数被称为占位符用于替换参数，注意填入的参数类型要和实体中的那个属性对应的上，否则就会报参数类型转换错误。
+
+### READ
+
+查也可以通过createQuery中写SQL，但from后面要跟实体名，不能直接写表名，这在Hibernate中被称为HQL，下面是查询示例:
+
+```java
+List list =  session.createQuery(" select p  from Person p where id = :id").setParameter("id",2L).list();
+List<Person> personList = session.createQuery(" select p  from Person p where address is null", Person.class).list();
+```
+
+比较有意思的是Hibernate还提供了逐行加载数据的查询，也就是滚动查询和Stream(这个Stream 非JDK 8的Stream)
 
 ## JPA
 
+前面我们提到JPA是一组标准接口，Hibernate提供了实现，我们这里也简单介绍一下JPA，要使用Hibernate对JPA的实现，还是要读配置文件，只不过构造出来的对象不同: 
 
+```java
+public class JPATest extends TestCase {
 
+    private EntityManagerFactory entityManagerFactory;
 
+    @Override
+    protected void setUp() throws Exception {
+        entityManagerFactory = Persistence.createEntityManagerFactory( "org.hibernate.tutorial.jpa" );
+    }
+    // createQuery的语法与我们上文介绍的相同
+    public void test(){
+        entityManagerFactory.createEntityManager().createQuery("select p from Person p where id = :id").setParameter("id",2L);
+    }
+
+    @Override
+    protected void tearDown() throws Exception {
+        entityManagerFactory.close();
+    }
+}
+```
 
 ## 总结一下
+
+相对于MyBatis来说，Hibernate和JPA感觉有些庞大，这一点从两者的用户指导书就可以看出:
+
+[![VIweJX.jpeg](https://i.imgloc.com/2023/06/23/VIweJX.jpeg)](https://imgloc.com/i/VIweJX)
+
+[![VIwFrJ.jpeg](https://i.imgloc.com/2023/06/23/VIwFrJ.jpeg)](https://imgloc.com/i/VIwFrJ)
+
+总结一下，我们介绍了Hibernate的基本使用，Hibernate和JDBC、JPA的关系。想起实习的时候，架构师吐槽MyBatis蠢的要命，架构师很喜欢Hibernate，但是MyBatis确实比较轻量级，很快就能上手。现在我还没体会到Hibernate的精妙之处，可能还是需要再学习一下吧。
+
+## 参考资料
+
+- Hibernate用户指导 https://docs.jboss.org/hibernate/orm/5.6/userguide/html_single/Hibernate_User_Guide.html#jpql-api
