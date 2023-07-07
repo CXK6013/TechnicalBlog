@@ -117,7 +117,17 @@ BIO/和NIO处理连接的策略不同，但是共同点都是使用了TCP协议�
 public final SelectableChannel configureBlocking(boolean block)
 ```
 
-这上面还得重修
+默认模式即是BIO,我们当前构建的就是BIO模式下面的HTTP服务器，我们上面说到我们想要使用应用层的协议需要端口，所以Server这个抽象类里面还需要一个端口初始变量，我们还想要我们的HTTP服务器支持HTTPS协议，但有希望这个是灵活配置的，那么Server也需要一个成员变量来切换HTTP、HTTPS模式，除此之外，TCP是面向连接的，但是服务端处理客户端请求建立的连接也需要时间，ServerSocket会维护一个队列，还没来得及处理的连接就会放到这个队列里面，如果队列已经满了，就会抛出连接被拒绝的异常。 所以我们的成员变量要要有控制队列大小的参数。
+
+到现在为止，我们就可以通过ServerSocketChannel来拿到SocketChannel了，操作系统会将数据通过通道送入到Buffer中，那这里我们可以在设计一个类，将通道的数据处理到
+
+
+
+
+
+
+
+
 
 ## 总结一下
 
@@ -128,4 +138,4 @@ public final SelectableChannel configureBlocking(boolean block)
 ## 参考资料
 
 - 有了 IP 地址，为什么还要用 MAC 地址？ https://www.zhihu.com/question/21546408
-- java socket编程中参数backlog的含义  https://www.cnblogs.com/qq3511107946/articles/12820031.html
+- java socket编程中参数backlog的含义  连接呗
