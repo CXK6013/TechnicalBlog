@@ -1,4 +1,4 @@
-# 用Java的BIO和NIO实现HTTP服务器(一)  绪论
+# 用Java的BIO和NIO实现HTTP服务器(一) BIO与 绪论
 
 [TOC]
 
@@ -119,11 +119,27 @@ public final SelectableChannel configureBlocking(boolean block)
 
 默认模式即是BIO,我们当前构建的就是BIO模式下面的HTTP服务器，我们上面说到我们想要使用应用层的协议需要端口，所以Server这个抽象类里面还需要一个端口初始变量，我们还想要我们的HTTP服务器支持HTTPS协议，但有希望这个是灵活配置的，那么Server也需要一个成员变量来切换HTTP、HTTPS模式，除此之外，TCP是面向连接的，但是服务端处理客户端请求建立的连接也需要时间，ServerSocket会维护一个队列，还没来得及处理的连接就会放到这个队列里面，如果队列已经满了，就会抛出连接被拒绝的异常。 所以我们的成员变量要要有控制队列大小的参数。
 
-到现在为止，我们就可以通过ServerSocketChannel来拿到SocketChannel了，操作系统会将数据通过通道送入到Buffer中，那这里我们可以在设计一个类，将通道的数据处理到
+到现在为止，我们就可以通过ServerSocketChannel来拿到SocketChannel了，操作系统会将数据通过通道送入到Buffer中，那这里我们可以在设计一个类，将通道的数据处理到ByteBuffer中，那既然要处理到这个ByteBuffer里面，所以我们这个类里需要有一个ByteBuffer的成员变量，这里我们简单的讲一下ByteBuffer，本文的思路是在用到的哪些概念的时候，就会讲哪些，讲的刚好够用。要给SocketChannel读，首先我们得创造ByteBuffer这个对象: 
 
+```java
+ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+```
 
+ 我们可以将ByteBuffer当做一个装数据的容器，那对于容器我们自然就关心如何存取，那如何存呢，ByteBuffer里面以put开头的就是将数据放入ByteBuffer中的方法，如果我们放入ByteBuffer的数据超过了设定的大小，就会抛出BufferOverFlowException这个异常:
 
+```java
+ ByteBuffer byteBuffer = ByteBuffer.allocate(1);
+ byteBuffer.put("hello world".getBytes(StandardCharsets.UTF_8));
+```
 
+存的问题，我们解决了，下面我们来解决如何取的问题，在读之前，我们需要介绍一下Buffer的几个重要属性，来帮助我们理解我们取数据，为什么要这么取。在ByteBuffer里有以下几个变量:
+
+- mark
+- position
+- limit
+- capacity
+
+capacity是ByteBuffer的大小，
 
 
 
