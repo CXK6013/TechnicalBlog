@@ -134,12 +134,433 @@ ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
 
 存的问题，我们解决了，下面我们来解决如何取的问题，在读之前，我们需要介绍一下Buffer的几个重要属性，来帮助我们理解我们取数据，为什么要这么取。在ByteBuffer里有以下几个变量:
 
-- mark
-- position
-- limit
-- capacity
+- position: 下一个将要写入或读取的数组下标
+- capacity: ByteBuffer的大小
 
-capacity是ByteBuffer的大小，
+- limit:  第一个不能读不能写的数组下标
+
+   ByteBuffer在未放入数据之前, position是0，capacity是4096，limit则是4096。上面我们放了数据进入ByteBuffer，我就只想读有数据的位置，那么只需要将position赋值给limit就行，然后将position放到0，这也就是ByteBuffer中flip方法做的事。现在我们已知的是, 通过ServerSocketChannel的accept方法在阻塞I/O模式下，直到连接建立，才会返回给我们一个SocketChannel，我们可以通过SocketChannel将数据读取到ByteBuffer中，那么对于TCP协议来说，TCP数据的负载1400字节，所以应用层如果交付给传输层的数据为1500字节，那么就需要两个TCP数据包传输，我们可以理解为拆成两个包裹发送，那对于SocketChannel来说，我们自然就关心他的读取方式，是到了多少数据包就读多少，还是根据ByteBuffer的剩余容量去读取呢？ 如果是到了多少数据包就读多少，那么我们知道ByteBuffer来说，超过了预设值的容量，就会抛异常， 我们应当根据TCP最大数据包进行扩容，如果ByteBuffer的剩余容量小于最大TCP数据包，那么就当进行扩容，这种假设建立在SocketChannel读的是一个有一个TCP数据包，因为SocketChannel的read方法在Oracle JDK中是不开源的，源码注释上又没写读写的行为，那我们如何针对ByteBuffer进行扩容呢, 毕竟SocketChannel向ByteBuffer里面读取数据的行为也不归我们控制，其实我是为这个问题思考过一阵的，我将这个问题定义为，在应用层未限制报文大小的前提，交付给传输层报文的大小不固定的情况下，该如何选择最优扩容时机。 我将这个问题抽象为了一个数学问题，苦苦思索，与朋友交谈之后，朋友建议我去看Netty是如何对ByteBuf进行扩容的, ByteBuf是Netty对ByteBuffer的扩展类，我虽然看的懂ByteBuf是如何扩容的，但是我还是无法回答我自己提出的问题，某一天我在公司这个问题还在我的脑海中盘旋，我装了Open JDK，OpenJDK是开源的，我们可以看Open JDK的实现，SocketChannel是一个抽象类，read方法是一个抽象方法，所以我们还得看SocketChannel的实现类，SocketChannelImpl, IDEA可以帮我们自动寻找子类，我电脑上的Open JDK是JDK11，read方法的实现如下:
+
+```java
+ public int read(ByteBuffer buf) throws IOException {
+        Objects.requireNonNull(buf);
+
+        readLock.lock();
+        try {
+            ensureOpenAndConnected();
+            boolean blocking = isBlocking();
+            int n = 0;
+            try {
+                beginRead(blocking);
+
+                // check if input is shutdown
+                if (isInputClosed)
+                    return IOStatus.EOF;
+
+                if (blocking) {
+                    do {
+                        n = IOUtil.read(fd, buf, -1, nd);
+                    } while (n == IOStatus.INTERRUPTED && isOpen());
+                } else {
+                    n = IOUtil.read(fd, buf, -1, nd);
+                }
+            } finally {
+                endRead(blocking, n > 0);
+                if (n <= 0 && isInputClosed)
+                    return IOStatus.EOF;
+            }
+            return IOStatus.normalize(n);
+        } finally {
+            readLock.unlock();
+        }
+    }
+```
+
+这里我们只关注操纵ByteBuffer的代码，其他我们不做研究，最终还是IOUtil来将数据放入ByteBuffer中，我们接着来看IOUtil的read方法，对应的实现如下:
+
+```java
+static int read(FileDescriptor fd, ByteBuffer dst, long position,
+                    boolean directIO, int alignment, NativeDispatcher nd)
+        throws IOException
+    {
+        if (dst.isReadOnly())
+            throw new IllegalArgumentException("Read-only buffer");
+        if (dst instanceof DirectBuffer)
+            return readIntoNativeBuffer(fd, dst, position, directIO, alignment, nd);
+
+        // Substitute a native buffer
+        ByteBuffer bb;
+        int rem = dst.remaining();
+        if (directIO) {
+            Util.checkRemainingBufferSizeAligned(rem, alignment);
+            bb = Util.getTemporaryAlignedDirectBuffer(rem, alignment);
+        } else {
+            bb = Util.getTemporaryDirectBuffer(rem);
+        }
+        try {
+            int n = readIntoNativeBuffer(fd, bb, position, directIO, alignment,nd);
+            bb.flip();
+            if (n > 0)
+                dst.put(bb);
+            return n;
+        } finally {
+            Util.offerFirstTemporaryDirectBuffer(bb);
+        }
+ }
+```
+
+我们可以看到在read方法里面又创建了一个ByteBuffer，然后调用了ByteBuffer的remaining方法，这个方法的作用是获取当前ByteBuffer还剩多少容量，directIO是false，到达的TCP数据包是先进了read方法自己创建的Bytebuffer中，然后在放入我们传入的Bytebuffer中。到现在为止我们就结案了，我们在用SocketChannel读之前也只需看下剩余容量，我们可以提前设定一个阈值为ByteBuffer的百分之五，如果剩余的小于百分之五，我们就可以认为ByteBuffer快用完了，然后我们就对ByteBuffer进行扩容，这个扩容的时机，你可以设定为ByteBuffer剩余容量为0，用完了再进行扩容，但我们应当避免频繁扩容，所以我这里不建议在ByteBuffer用完了再进行扩容，我设置的是百分之五，你也可以设置为百分之十，我为什么设置为百分之五呢，这是我参考别人的设计，至于为什么别人要设定为剩余容量小于百分之五，我暂时还没联系到那位作者，为什么这么设计。 其实我们也可以不扩容，简单一点就是设定接收的最大报文长度，然后ByteBuffer就分配这个大小，这么做似乎有些浪费，我们本篇采用的设计就是剩余容量小于百分之五对ByteBuffer进行扩容。
+
+扩容的问题解决了， 我们的ByteBuffer可以放的下客户端发送的报文了，那么还有一个问题就是什么时候，读取数据完毕，然后对数据进行解析。对于HTTP请求报文来说是有结束符号的，所以我们可以判断ByteBuffer中的数据是否有结束符，如果有就代表HTTP请求的数据解析完毕，可以交给接收方来处理了。注意我们本次构建的HTTP服务器相对初级一点，只支持HTTP 1.0，而且用的I/O模型是BIO，所以我们也可以判断如果SocketChannel没有可以读的数据了，代表HTTP请求的数据解析完毕了。我们可以将数据交给专门解析数据的组件来进行处理，这个组件你可以理解为类。
+
+到现在为止我们的流程有接收数据，解析数据，根据请求构建响应，然后发送响应。我们讲了这么多理论，已经可以开始着手写接收数据和解析数据的部分了，我们本系列的预期是用Java的标准库来实现BIO/NIO模式下的HTTP/HTTPS服务器，然后用Netty来实现HTTP服务器，设计的HTTP服务器比较简单，只回应的简单请求。后面逐步的扩展。
+
+因为我们可以借助ServerSocketChannel来配置BIO还是NIO，而BIO和NIO就是在具体的行为上有所不同，在初始化属性方面是具备共性的，所以这里我们首先建立了一个抽象类Server，Server负责初始化端口，backlog，启动的是HTTP模式还是HTTPS模式，本篇不介绍HTTPS的实现，我们将HTTPS的实现放在后面介绍。
+
+本篇我们写的是一个HTTP服务器, 这里我想做的灵活一些，在启动的时候可以指定端口、backlog等等。我们现在知道Java 启动的命令如下所示:
+
+```java
+java -jar jar名 
+```
+
+在jar名后面跟的参数会被main函数的args接收，我们来测试一下, 首先我们有一个Spring Boot Web工程，然后我们在main函数里面打印一下args参数:
+
+```java
+@SpringBootApplication
+public class SsmApplication {
+    public static void main(String[] args) {
+        System.out.println(Arrays.toString(args));
+        SpringApplication.run(SsmApplication.class, args);
+    }
+}
+```
+
+然后我们在IDEA的terminal里面输入:
+
+```java
+mvn package
+```
+
+然后在target里面就可以看到打包好的jar了，然后我们以命令行的方式启动这个jar:
+
+```
+java -jar jar名 hello
+```
+
+ 就能在启动的时候看见，首先在终端里面输出的是hello:
+
+![](https://a.a2k6.com/gerald/i/2023/07/16/hyze.jpg)
+
+我们一般用IDEA开发，在IDEA里面想配置这个参数可以通过如下步骤:
+
+![](https://a.a2k6.com/gerald/i/2023/07/16/hwa7.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/07/16/2ks4.jpg)
+
+我们前面提到我们会用原生NIO、BIO，Netty实现HTTP服务器，我们就读取program aruments来决定当前的HTTP服务器是哪种模型，所以我们的基础Server类如下所示:
+
+```java
+package org.example.http;
+
+import javax.net.ssl.SSLContext;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.channels.ServerSocketChannel;
+import java.util.Arrays;
+
+/**
+ * @author xingke
+ * @date 2023-07-15 15:36
+ */
+public abstract class Server {
+
+    protected ServerSocketChannel serverSocketChannel;
+
+    protected SSLContext sslContext;
+
+   static int port = 8000;
+
+   static int backlog = 1024;
+
+   static boolean secure = false;
+
+    public Server(int port, int backlog, boolean secure) throws IOException {
+        // 创建一个ServerSocketChannel
+        serverSocketChannel =  ServerSocketChannel.open();
+        /**
+         * 可以重用ip+端口这个链接,TCP以链接为单位,当TCP链接要关闭的时候，会等待一段时间再进行关闭,
+         * 如果我想要重用端口,那么channel就无法绑定,在绑定到对应地址之前,设定重用地址。即使在这个端口上的tcp连接
+         * 处于处于TIME_WAIT状态,我们仍然可以使用
+         */
+        serverSocketChannel.socket().setReuseAddress(true);
+        // 绑定端口和backlog
+        serverSocketChannel.bind(new InetSocketAddress(port),backlog);
+
+    }
+
+    /**
+     * 这里是抽象方法,我们后面要用NIO再实现一遍
+     * 所以这里交给子类来实现
+      */
+   protected  abstract void runServer();
+
+    /**
+     * 我们要写的是一个简单的HTTP服务器,
+     * 这个服务器可以从命令行方式启动的时候接收参数
+     * 我们可以选择从main函数
+     * @param args
+     */
+   public static void main(String[] args) throws IOException {
+       Server server = null;
+       if (args.length == 0){
+           System.out.println("http server running default model");
+           server = new BlockingServer(port,backlog,secure);
+           server.runServer();
+       }
+       // 端口目前先固定死, 我们目前只读一个参数
+       if ("B".equals(args[0])){
+            server = new BlockingServer(port,backlog,secure);
+       }else if ("N".equals(args[0])){
+            server = new NonBlockingServer(port,backlog,secure);
+       }else{
+           System.out.println("input args error only support B OR N");
+       }
+       server.runServer();
+   }
+}
+
+```
+
+### 再重新梳理一下我们需要的组件
+
+在Java里面一切都是类，这里说的组件只是承担了特别功能的类，我们就姑且将其命名为组件。根据处理流程，我这里划分了以下几个类:
+
+- Server 基础类, 根据读取的参数来以不同的IO模型处理请求
+- Server的子类: 
+  - BlockingServer 真正处理请求的类 BIO模式
+  - NonBlockingServer 真正处理请求的类 NIO模式
+- ChannelIO 负责从Channel里面读取数据到ByteBuffer中
+- RequestServicer 解析请求 给响应
+- Request 辅助解析请求
+- Reply  辅助构建响应
+
+运作流程如下所示:
+
+![](https://a.a2k6.com/gerald/i/2023/07/16/3qkjr.jpg)
+
+这是我自己的分法，你也可以按照自己的方式去分解，我将最基础的原理都告诉了诸君，诸君也可以写在一个类里面，用上各种各样的设计模式，都可以有自己的写法。
+
+### BlockingServer
+
+BIO模式下的解析数据相对简单一些，我们只需要调用SeverSocketChannel的accept方法，会一直阻塞，直到连接完全建立，连接建立之后我们将SocketChannel传递给ChannelIO即可。所以我们的BlockingServer可以这么写:
+
+```java
+public class BlockingServer extends Server{
+
+    public BlockingServer(int port, int backlog, boolean secure) throws IOException {
+        super(port, backlog, secure);
+    }
+    @Override
+    protected void runServer() throws IOException {
+        SocketChannel socketChannel = serverSocketChannel.accept();
+        ChannelIO channelIO = ChannelIO.getInstance(socketChannel, true);
+        RequestServicer requestServicer = new RequestServicer(channelIO);
+        requestServicer.run();
+    }
+}
+
+```
+
+跟我们上面的运作流程是一样的，连接建立之后拿到SocketChannel, 然后将SocketChannel传递给ChannelIO，读取通道的数据，读取完数据交给RequestServicer, 解析请求数据，给予客户端响应。
+
+#### ChannelIO
+
+我们上面提到我们要解析请求数据，那就代表要读取，给予客户端响应，代表要写，ChannelIO需要有一个读方法和写方法，在读之前我们需要ByteBuffer，所以我们在获得ChannelIO实例的时候，需要预先分配一个ByteBuffer，因为HTTP协议未限制报文大小，我们的ByteBuffer可能就会装不下，所以我们在读的时候就需要判断剩余容量，根据剩余容量的多少来判断是否需要扩容。读取数据完毕，数据写完了，我们就需要关闭通道，所以我们的ChannelIO如下所示: 
+
+```java
+package org.example.http;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SocketChannel;
+
+
+public class ChannelIO {
+
+    private SocketChannel socketChannel;
+    
+    private ByteBuffer requestBuffer;
+
+    int defaultByteBufferSize = 4096;
+
+    private ChannelIO(SocketChannel socketChannel, boolean blocking) throws IOException {
+        this.socketChannel = socketChannel;
+        this.requestBuffer = ByteBuffer.allocate(4096);
+        this.socketChannel.configureBlocking(blocking);
+    }
+
+
+    public static ChannelIO getInstance(SocketChannel socketChannel, boolean blocking) throws IOException {
+        return  new ChannelIO(socketChannel,blocking);
+    }
+
+    public int read() throws IOException {
+        // 剩余的小于百分之五自动扩容
+        resizeByteBuffer(defaultByteBufferSize / 20);
+        return socketChannel.read(requestBuffer);
+    }
+
+    private void resizeByteBuffer(int remaining) {
+        if (requestBuffer.remaining() < remaining){
+            // 扩容一倍
+            ByteBuffer newRequestBuffer = ByteBuffer.allocate(requestBuffer.capacity() * 2);
+            // 转为读模式
+            requestBuffer.flip();
+            //  将旧的buffer放入到新的buffer中
+            newRequestBuffer.put(requestBuffer);
+            requestBuffer = newRequestBuffer;
+        }
+    }
+
+    public ByteBuffer getReadBuf(){
+        return this.requestBuffer;
+    }
+
+    public int write(ByteBuffer byteBuffer) throws IOException{
+        return socketChannel.write(byteBuffer);
+    }
+    
+    public void close() throws IOException{
+        socketChannel.close();
+    }
+}
+```
+
+ChannelIO有了，现在就需要RequestServicer来调用ChannelIO提取数据了。
+
+#### RequestServicer
+
+在HTTP协议下面，不限制报文的大小，那么TCP协议会对HTTP交付的报文分包发送，至于分几个包我们无法预设，所以提取数据应当是一个无限循环，虽然HTTP不限制报文的大小，但是也是有结束符的，所以我们可以解析报文判断解析到的数据是否有结束符，再有另一个条件就是SocketChannel读不到数据了，我们也可以认为读完了，所以这个无限循环结束的条件有两个，一是SocketChannel无数据可读，二是从接收到的数据解析到了结束符。
+
+从接收到的数据解析到了结束符的这个功能我们放到Request这个类里面。
+
+##### Request
+
+HTTP 2.0 之前以\r\n作为结束符(这里不确定改了没)，所以我们判断结束只需要判断ByteBuffer中的后四个字符是\r\n即可，判断报文是否接收完毕的事情结束了，我们接下来回答如何就解析数据这个问题，一只的是HTTP请求有请求方式: GET POST HEAD PUT等，我们目前设计的是只支持这四种，所以我们从数据里面解析到请求方式，如果不是我们支持的请求方式，我们就需要告诉客户端，bad request，也就是400。这里我们解析到数据后之后，就回复一个hello world给客户端。
+
+我们在捋一下Request具备的功能，首先是判断报文是否接收完毕，再有就是解析报文，在解析报文的时候我们首先获取请求方式，如果请求方式不被支持，响应就是400，如果是支持的方式，我们就接着往下解析，用解析的信息构造URI这个类，我这里的设计是Request有三个成员变量一个是请求方式，这个我们用一个内部类来承接，一个是HTTP版本，一个是hostname。 所以我们的Request类构成如下: 
+
+```java
+public class Request {
+
+    private Action action;
+
+    private URI uri;
+
+    private String version;
+
+    public Request(Action action, URI uri, String version) {
+        this.action = action;
+        this.uri = uri;
+        this.version = version;
+    }
+
+    static class Action{
+        private String name;
+
+        static Action GET = new Action("GET");
+
+        static Action POST = new Action("POST");
+
+        static Action PUT = new Action("PUT");
+
+        static Action HEAD = new Action("HEAD");
+
+        public Action(String name) {
+            this.name = name;
+        }
+        public String toString(){
+            return this.name;
+        }
+        static Action parse(String s){
+            if ("GET".equals(s)){
+                return GET;
+            }
+            if ("POST".equals(s)){
+                return POST;
+            }
+            if ("PUT".equals(s)){
+                return PUT;
+            }
+            if ("HEAD".equals(s)){
+                return HEAD;
+            }
+            // 参数不合法
+            throw new IllegalArgumentException(s);
+        }
+    }
+
+
+    public  static boolean isComplete(ByteBuffer byteBuffer){
+        int position = byteBuffer.position() - 4;
+        if (position < 0){
+            return false;
+        }
+        return byteBuffer.get(position + 0) == '\r'
+                && byteBuffer.get(position + 1) == '\n'
+                && byteBuffer.get(position + 2) == '\r'
+                && byteBuffer.get(position + 2) == '\n';
+    }
+
+    private static Charset ascii = StandardCharsets.US_ASCII;
+
+    /**
+     * 正则表达式 用来分割请求报文
+     * http 请求的报文是: GET /dir/file HTTP/1.1
+     *  Host: hostname
+     *  被正则表达式分割以后:
+     *      group[1] = "GET"
+     *      group[2] = "/dir/file"
+     *      group[3] = "1.1"
+     *      group[4] = "hostname"
+     */
+    private static Pattern requestPattern
+            = Pattern.compile("\\A([A-Z]+) +([^ ]+) +HTTP/([0-9\\.]+)$"
+                    + ".*^Host: ([^ ]+)$.*\r\n\r\n\\z",
+            Pattern.MULTILINE | Pattern.DOTALL);
+
+    public static  Request parse(ByteBuffer byteBuffer) throws RequestException {
+        // byte to char
+        CharBuffer charBuffer = ascii.decode(byteBuffer);
+        Matcher matcher = requestPattern.matcher(charBuffer);
+        // 未匹配
+        if (matcher.matches()){
+            throw new  RequestException();
+        }
+        Action a;
+        try {
+            a = Action.parse(matcher.group(1));
+        }catch (IllegalArgumentException  e){
+            throw new RequestException();
+        }
+        URI u = null;
+        try {
+             u = new URI("http://" + matcher.group(4) + matcher.group(2));
+        }catch (URISyntaxException e){
+            throw new RequestException(e);
+        }
+        return new Request(a,u,matcher.group(3));
+    }
+}
+```
+
+这里我们理一下一个报文被处理的过程，首先我们将Byte转为char，然后用正则表达式将数据进行分割，如果和我们设定的正则表达式不匹配，则抛出解析异常，如果解析正常，那么从解析的数据中解析请求方式，如果不是我们支持的请求方式，同样也抛出解析异常。解析请求方式正常我们用解析到的信息来构建URI对象。解析失败同样抛400。最后返回一个Request对象。解析完了请求，我们如何给响应，这也就是Reply类承接的工作。
+
+##### Reply
+
+一个响应首先有响应码、响应内容，然后辅助我们给响应头，那这个这个组件，应该具备什么样的功能呢？ 
+
+##### 处理请求和响应
 
 
 
@@ -151,7 +572,11 @@ capacity是ByteBuffer的大小，
 
 
 
+
+
 ## 参考资料
 
 - 有了 IP 地址，为什么还要用 MAC 地址？ https://www.zhihu.com/question/21546408
-- java socket编程中参数backlog的含义  连接呗
+- java socket编程中参数backlog的含义 
+- TCP 协议简介 https://www.ruanyifeng.com/blog/2017/06/tcp-protocol.html
+- HTTP 消息结束的标志  https://www.jtr109.com/posts/http-end-identity/
