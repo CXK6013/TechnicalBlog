@@ -1,4 +1,4 @@
-# 用Java的BIO和NIO实现HTTP服务器(一) BIO与 绪论
+# 用Java的BIO和NIO、Netty实现HTTP服务器(一) BIO与绪论
 
 [TOC]
 
@@ -36,7 +36,7 @@
 
 本系列打算糅合这些文章，使用Java写一个简单的HTTP/HTTPS服务器，我的预设是希望读者诸君已经看过上面的文章了，但是数了数上面大致有十四篇了，希望 读者诸君已阅上面的文章，想来有些奢望。那这里大致的理理这些文章的结构，并给出一个阅读本篇的最小知识点。让我们从网络通信开始说起，如果通信的双方不是面对面，那么交流就要借助于载体，我想起小时候经常看的武侠电影，卧底将情报绑在信鸽的腿上，但是这样传递情报的方式，情报就有被篡改、丢失、截获的风险。篡改、丢失、截获，这也是通信要面临的三个问题。随着时代的发展，越来越快的交互信息变得越来越迫切，计算机帮助我们完成任务之后，我们希望也在计算机上完成信息的交换，那么要完成信息的交换，两台计算机势必要有信道，信道是传输信息的通道，但是有了通道还不够，通信的双方还需要彼此知道地址，有了地址还不够，我们还要避免信息的截获、丢失、篡改。
 
-在通信的时候，通信的双方是明确的，也就是说我知道我要和谁通信，以上就概括了两台计算机通信要面临的问题，面对这么多问题，计算机互联网的先驱们，选择了分层来解决问题，两台计算机之间的信道被划到物理层，信息最终要转变为信号，而物理层就负责传输信号。单纯的0和1没有任何意义，必须规定解读方式，多少个电信号算一组？ 每个信号位有何意义？ 如果我们只有两台计算机，信号送给是明确的，最早的网络是猫+电话线，连一条电话线。理论上双方只要完成拨号，双方就能进行通信。这个过程跟两个人打电话没什么区别。如下图所示, 图片来自https://labpub.com/learn/silver/wi7/modems.html
+在通信的时候，通信的双方是明确的，也就是说我知道我要和谁通信，以上就概括了两台计算机通信要面临的问题，面对这么多问题，计算机互联网的先驱们，选择了分层来解决问题，两台计算机之间的信道被划到物理层，信息最终要转变为信号，而物理层就负责传输信号。单纯的0和1没有任何意义，必须规定解读方式，多少个电信号算一组？ 每个信号位有何意义？ 如果我们只有两台计算机，信号送给是明确的，最早的网络是猫+电话线，连一条电话线。理论上双方只要完成拨号，双方就能进行通信。这个过程跟两个人打电话没什么区别。如下图所示: 
 
 ![img](https://labpub.com/learn/silver/wi7/modem_2.gif)
 
@@ -48,37 +48,27 @@
 
 解决了冲突问题，总线网络就能工作吗？当然是不能的! 我们在签名讲的点对点两边各有一台电脑，收房双方非常明确，不需要额外信息。那么在总线网络中，所有电脑共享一条电缆，可以同时接收网络上的全部信号。那大家如何确定数据是如何发给自己的呢？为了解决这个问题，人们发明了数据帧这个概念。帧是发送数据的最小单位，当时有很多链路层协议，以太网只是后面涉及的一种。但是不同的帧结构都是大同小异，核心都包含目标地址、源地址和数据三部分，这也是和寄信一样，信封是携带了发送人的地址、收信人的地址、信内容。
 
-![img](https://picx.zhimg.com/80/v2-c88cbfed6264fc4f871346592e192468_720w.webp?source=1940ef5c)
-
 这里首次出现了地址这个概念。正是因为总线网线中所有设备共享总线，所以需要通过引入地址的概念来区分不同的设备。对于以太网，这个地址就是我们常说的MAC地址。这个时候猫已经变成了我们现在常说的网卡了。以太网规定MAC地址占6个字节，也就是前面说的48位。
 
-所有发出的包都带着目标电脑的MAC地址。网络中所有设备收到数据后悔自觉比较目标地址是不是自己，如果不是就丢弃，是的，你没有听错，全凭大家自觉。这样就解决了上面我们提出的问题。
+所有发出的包都带着目标电脑的MAC地址。网络中所有设备收到数据后会自觉比较目标地址是不是自己，如果不是就丢弃，是的，你没有听错，全凭大家自觉。这样就解决了上面我们提出的问题。
 
 引入地址的概念，也就产生了新的问题-如何给计算机设置MAC地址呢？ 不同的网络有不同的处理方式。
 
 曾经有一种叫ARCNET的网络协议，它的MAC地址只有1个字节(8位)，需要网络管理员通过网卡上的拨动开关手工设置开关设置。好在当年能连网的设备很少，8位地址可以支持最多256台设备连网，也够用了。
 
-![img](https://picx.zhimg.com/80/v2-7ab58e16a320d5bc04e7842db790cbbc_720w.webp?source=1940ef5c)
-
 以太网规定在网卡出厂的时候就得分配48位MAC地址，全球唯一。
 
 随着总线网络的普及，越来越多的大公司或者是大学开始使用网络连接它们的设备。为了方便传输数据，人们还发明了网桥，我们可以将网桥想象成装有多个网卡的设备，每个网卡连接一个总线网络。网桥唯一的作用就是把一个网卡收到的内容原样转发到另一张网卡所在的网络。
 
-![img](https://picx.zhimg.com/80/v2-ccdeabbffbfbd33f42979d610f2df7cb_720w.webp?source=1940ef5c)
-
-
-
 这样网络的规模越来越大，连网的设备越来越多，通信冲突的频率页越来越高。最终的结果就是数据传输的越来越低(因为只要有一个人在发数据，其他所有人都得等待)。但就这样，人们对互联互通的要求还是没被满足。除了公司或者组织内部的网络，人们还想把不同城市的设备和网络都连起来，这就需要用到长途电话线。
 
-前面我们说过网桥是一种无脑转发设备，它的无脑不仅体现在不关心数据内容方面，还体现在尽机子最大能力转发。如果是相同局域网，两边的网速相机，那不会有什么问题。那如果一边是局域网，一边是长途电话线，那么来自局域网的广播数据会把电话线鸡煲，大家谁也别想玩。
+前面我们说过网桥是一种无脑转发设备，它的无脑不仅体现在不关心数据内容方面，还体现在尽自己最大能力转发。如果是相同局域网，两边的网速相近，那不会有什么问题。那如果一边是局域网，一边是长途电话线，那么来自局域网的广播数据会把电话线挤爆，大家谁也别想玩。
 
 既然出现了这样的问题，我么就需要对网桥进行改造，我们希望那个网桥智能一点。让它可以学习不同网络所有设备的MAC地址。当有数据要转发的时候，它可以根据目标地址判断应该转发到哪个网卡，从而减少广播数量。
 
 但是因为以太网的MAC地址是在出厂的时候指定的，那么就没有办法确定某个总线网络中所有的AMC地址，只能通过广播来学习，也只能在网桥设备保存全部MAC地址，而且还要及时更新。除此之外，网桥本身只转发，理论上也不需要MAC地址。所以网络内的计算机知道数据是经过了几个网桥转发，如果出了问题，也不知道在哪个环节出了问题。
 
 最终IETF(Internet Enginering Task Force)给出了解决方案 ，也就是再加一层，也就是在以太网之上引入了网络层(也就是IP层)。  就是引入逻辑地址，这也就是IP地址，而且觉得32位差不多够用了，甚至都没考虑MAC地址都是48位。通过IP地址我们就可以将网络划分成许多个子网，根据逻辑地址，我们就能知道要转发给哪个网卡了，从而减少广播数量。所以，每个设备想要加入一个网络都需要被分配一个IP地址，通信的双方使用IP地址进行通信。IP地址是管理员按需指定的，可以根据前缀聚合。所以原来的网桥，现在变成了路由器，不需要保存网络中所有的MAC地址，只要保存网络前缀就能进行转发。
-
-![img](https://pica.zhimg.com/80/v2-ecf79d7db7b32d588532dd91521f78fc_720w.webp?source=1940ef5c)
 
 那么请问，如何根据逻辑地址得到目标的mac地址呢？ 这也就是ARP协议。每当电脑在通信之前会先在网络上发一个广播(这个广播不会被转发到其他网络)， 问谁的IP地址是某某，这个时候对应的电脑就会回复，是我，我的MAC地址是某某某。发送方就当拿到了接收方的MAC地址，进而完成通信。
 
@@ -88,6 +78,8 @@
 
 整个过程，H1和R1都不需要知道H2的MAC地址，但所有节点必须知道相临节点的MAC地址（也叫下一跳）。所以说，到现在为止，哪怕是引入了IP层，实际通信还是依赖MAC地址。在IP网络中，如果模板在同一个网络，则通过广播进行通信; 否则，则通过网关转发。因为有广播的存在，所以网速还是会受到影响，这时每个局域网也叫冲突域。因为IP网络引入了路由器，所以跟原来的总线网络相比，冲突域变小了，广播减少了，网速提高了。但是我们还希望网速更快，于是我们发明了交换机，交换机也是一种局域网设备，功能和前面说的网桥类似，但是交换机可以进一步减少广播的数量。
 
+声明到这里为止， 基本引用的是参考资料[1], 来自知乎作者涛叔。下面基本为我的原创。
+
 但是，交换机可以进一步减少广播的数量。以上图为例。如果A想给C发送数据，它会先通过ARP广播查询C的MAC地址。这一步是免不了的。但是，这一步也会被交换机监听/学习到，所以交换机会将C连接的网口跟C的MAC地址绑定到一起，等A给C发数据的时候，交换机只会给C发数据。这个时候B和D都收不到数据。不但收不到，B和D还可以在A与C通信期间进行通信，这就进一步提高了网络的利用效率。
 
 网络在发展的同时，计算机也在发展，两台计算机进行通信，本质上是两台计算机上的进程进行通信，那么一台计算机是可以运行多个进程的，那么ip层上报的报文，该交给哪个进程呢，由此就引出了传输层，传输层引入了端口这个概念，来解决这个问题，ip加上端口，就能知道报文交给哪个进程进行处理。但数据一定能送到嘛，这也是我们上面提出的数据丢失问题，丢失了怎么办，再重传，这也就是传输层要考虑的问题。传输层协议交给进程的是字节流，通信的双方需要制定规则才能解析出有意义的报文，由此就引出了应用层协议。
@@ -95,8 +87,6 @@
 那么作为开发人员，我们该如何使用网络协议，操作系统提供了对应的实现，各个高级语言一般都内置了调用，目前来说只有几种可供应用程序使用的TCP/IP的应用程序接口，最著名的就是美国加利福利亚大学伯克利分校为Berkeley UNIX操作系统定义的API，被称为套接字接口(socket interface)。微软在其操作系统中采用了套接字 API，但是有一点不同，我们称之为Windows Socket。AT&T的Unix System V版本定义的接口，简写为TLI(Transport Layer port)
 
 我们可以认为套接字作为进程和运输层协议之间的接口，像下面这样。
-
-
 
 ![img](https://p3-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/9ad770ac7b1443bfa71ea662fbd9d0e1~tplv-k3u1fbpfcp-zoom-in-crop-mark:4536:0:0:0.awebp)
 
@@ -135,11 +125,12 @@ ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
 存的问题，我们解决了，下面我们来解决如何取的问题，在读之前，我们需要介绍一下Buffer的几个重要属性，来帮助我们理解我们取数据，为什么要这么取。在ByteBuffer里有以下几个变量:
 
 - position: 下一个将要写入或读取的数组下标
+
 - capacity: ByteBuffer的大小
 
 - limit:  第一个不能读不能写的数组下标
 
-   ByteBuffer在未放入数据之前, position是0，capacity是4096，limit则是4096。上面我们放了数据进入ByteBuffer，我就只想读有数据的位置，那么只需要将position赋值给limit就行，然后将position放到0，这也就是ByteBuffer中flip方法做的事。现在我们已知的是, 通过ServerSocketChannel的accept方法在阻塞I/O模式下，直到连接建立，才会返回给我们一个SocketChannel，我们可以通过SocketChannel将数据读取到ByteBuffer中，那么对于TCP协议来说，TCP数据的负载1400字节，所以应用层如果交付给传输层的数据为1500字节，那么就需要两个TCP数据包传输，我们可以理解为拆成两个包裹发送，那对于SocketChannel来说，我们自然就关心他的读取方式，是到了多少数据包就读多少，还是根据ByteBuffer的剩余容量去读取呢？ 如果是到了多少数据包就读多少，那么我们知道ByteBuffer来说，超过了预设值的容量，就会抛异常， 我们应当根据TCP最大数据包进行扩容，如果ByteBuffer的剩余容量小于最大TCP数据包，那么就当进行扩容，这种假设建立在SocketChannel读的是一个有一个TCP数据包，因为SocketChannel的read方法在Oracle JDK中是不开源的，源码注释上又没写读写的行为，那我们如何针对ByteBuffer进行扩容呢, 毕竟SocketChannel向ByteBuffer里面读取数据的行为也不归我们控制，其实我是为这个问题思考过一阵的，我将这个问题定义为，在应用层未限制报文大小的前提，交付给传输层报文的大小不固定的情况下，该如何选择最优扩容时机。 我将这个问题抽象为了一个数学问题，苦苦思索，与朋友交谈之后，朋友建议我去看Netty是如何对ByteBuf进行扩容的, ByteBuf是Netty对ByteBuffer的扩展类，我虽然看的懂ByteBuf是如何扩容的，但是我还是无法回答我自己提出的问题，某一天我在公司这个问题还在我的脑海中盘旋，我装了Open JDK，OpenJDK是开源的，我们可以看Open JDK的实现，SocketChannel是一个抽象类，read方法是一个抽象方法，所以我们还得看SocketChannel的实现类，SocketChannelImpl, IDEA可以帮我们自动寻找子类，我电脑上的Open JDK是JDK11，read方法的实现如下:
+  ByteBuffer在未放入数据之前, position是0，capacity是4096，limit则是4096。上面我们放了数据进入ByteBuffer，我就只想读有数据的位置，那么只需要将position赋值给limit就行，然后将position放到0，这也就是ByteBuffer中flip方法做的事。现在我们已知的是, 通过ServerSocketChannel的accept方法在阻塞I/O模式下，直到连接建立，才会返回给我们一个SocketChannel，我们可以通过SocketChannel将数据读取到ByteBuffer中，那么对于TCP协议来说，TCP数据的负载1400字节，所以应用层如果交付给传输层的数据为1500字节，那么就需要两个TCP数据包传输，我们可以理解为拆成两个包裹发送，那对于SocketChannel来说，我们自然就关心他的读取方式，是到了多少数据包就读多少，还是根据ByteBuffer的剩余容量去读取呢？ 如果是到了多少数据包就读多少，那么我们知道ByteBuffer来说，超过了预设值的容量，就会抛异常， 我们应当根据TCP最大数据包进行扩容，如果ByteBuffer的剩余容量小于最大TCP数据包，那么就当进行扩容，这种假设建立在SocketChannel读的是一个有一个TCP数据包，因为SocketChannel的read方法在Oracle JDK中是不开源的，源码注释上又没写读写的行为，那我们如何针对ByteBuffer进行扩容呢, 毕竟SocketChannel向ByteBuffer里面读取数据的行为也不归我们控制，其实我是为这个问题思考过一阵的，我将这个问题定义为，在应用层未限制报文大小的前提，交付给传输层报文的大小不固定的情况下，该如何选择最优扩容时机。 我将这个问题抽象为了一个数学问题，苦苦思索，与朋友交谈之后，朋友建议我去看Netty是如何对ByteBuf进行扩容的, ByteBuf是Netty对ByteBuffer的扩展类，我虽然看的懂ByteBuf是如何扩容的，但是我还是无法回答我自己提出的问题，某一天我在公司这个问题还在我的脑海中盘旋，我装了Open JDK，OpenJDK是开源的，我们可以看Open JDK的实现，SocketChannel是一个抽象类，read方法是一个抽象方法，所以我们还得看SocketChannel的实现类，SocketChannelImpl, IDEA可以帮我们自动寻找子类，我电脑上的Open JDK是JDK11，read方法的实现如下:
 
 ```java
  public int read(ByteBuffer buf) throws IOException {
@@ -324,6 +315,7 @@ public abstract class Server {
             server = new NonBlockingServer(port,backlog,secure);
        }else{
            System.out.println("input args error only support B OR N");
+           return;
        }
        server.runServer();
    }
@@ -558,25 +550,298 @@ public class Request {
 
 ##### Reply
 
-一个响应首先有响应码、响应内容，然后辅助我们给响应头，那这个这个组件，应该具备什么样的功能呢？ 
+一个响应首先有响应码、响应内容，然后辅助我们给响应头，那这个这个组件，应该具备什么样的功能呢？首先是辅助我们加响应头，所以这个类里面有一个headers方法，来辅助我们加请求头。请求标头里面还有一个状态编码值得我们注意，说的状态编码，各位同学可能还是不大理解， 我们直接看图:
 
-##### 处理请求和响应
+![](https://a.a2k6.com/gerald/i/2023/07/17/374.png)
+
+这个状态代码也是需要我们的Server需要回应的，一个是http状态码，另一个是描述，这里我用类来描述状态代码，这个类我命名为Code，这是我取的名字，你可以命名为StatusCode，这个StatusCode 放置了一些常用的状态代码： 200、400、404、405。所以我们的Reply里面需要有一个Code类型的成员变量，一个HTTP请求，有响应标头和响应体，响应体里是放我们发送给客户端的内容。所以我们这里还需要有一个响应体的成员变量，我们也知道HTTP支持各种各样的消息类型，比如html、xml等等，除了类型之外，还需要告诉客户端的内容长度。我们发送内容的时候操纵的是字符所有我们的接口里面还需要有一个方法来将内容转码, 我们后面还需要回应文件内容，所以接口里面还需要有一个释放资源的方法。这里我选择用接口来抽象行为，发送的时候就能使用一组方法，构建起来更为简单。我认为转码，发送，释放资源应当在一个接口里面，我们姑且命名为Sendable：
+
+```java
+public interface Sendable {
+    void prepare() throws IOException;
+
+    boolean send(ChannelIO channelIO);
+    
+    void release();
+}
+```
+
+而响应内容类型和长度不应该放在发送接口里面，我建模的思路是某个对象类型有不同的响应类型和计算长度方法，而且都能发送出去，所以我这里设计的是实际内容接口继承Sendable接口:
+
+```java
+public interface Content extends Sendable {
+    
+    String type();
+
+    long length();
+}
+```
+
+我们这里实现一个文本类型，我们姑且将其命名为StringContent，字符串形式的响应类型有各种各样的，所以我们这里是需要在StringContent里面放置一个这样一个成员变量，实际内容也是由外部传入，传入的内容最终还是需要通过ByteBuffer返回给调用者，所以这里还是需要一个ByteBuffer一个成员变量。这里构造函数我们放置三个，第一个是内容和类型都由外部传入，第二个是由外部传入响应内容，响应内容类型固定为text/plain。 第三个是不接受支持的类型，这里我们接收的参数是Exception。在这种指导思想下我们的StringContent如下所示:
+
+```java
+public class StringContent implements Content{
+
+    private String type;    // MIME type
+
+    private String content;
+
+    private ByteBuffer byteBuffer;
+
+    private static final Charset ascii = StandardCharsets.US_ASCII;
+
+    StringContent(CharSequence c, String t) {
+        content = c.toString();
+        type = t + "; charset=iso-8859-1";
+    }
+
+    StringContent(CharSequence c) {
+        this(c, "text/plain");
+    }
+
+    StringContent(Exception x) {
+        StringWriter sw = new StringWriter();
+        x.printStackTrace(new PrintWriter(sw));
+        type = "text/plain; charset=iso-8859-1";
+        content = sw.toString();
+    }
+
+    @Override
+    public String type() {
+        return type;
+    }
+
+    @Override
+    public long length() {
+        return byteBuffer.remaining();
+    }
+
+    @Override
+    public void prepare() throws IOException {
+        encode();
+        byteBuffer.rewind();
+    }
+
+    private void encode() {
+        if (byteBuffer == null){
+            byteBuffer =  ascii.encode(CharBuffer.wrap(content));
+        }
+    }
+
+    @Override
+    public boolean send(ChannelIO channelIO) throws IOException {
+        if (byteBuffer == null)
+            throw new IllegalStateException();
+        channelIO.write(byteBuffer);
+        return  byteBuffer.hasRemaining();
+    }
+
+    /**
+     * 这是个空方法
+     * 后面只是为了统一调用
+     */
+    @Override
+    public void release() {
+
+    }
+}
+```
+
+我们接着回到Reply，Reply里面有Code、Content，还有一个辅助构建请求头的，我将发送数据的也放置在这个方法里面，所以Reply也实现了Sendable接口, 负责将数据发送给客户端, 所以Reply如下所示:
+
+```java
+public class Reply implements Sendable {
+
+    static class Code{
+
+        private int number;
+
+        private String description;
+
+        public Code(int number, String description) {
+            this.number = number;
+            this.description = description;
+        }
+
+        static Code OK = new Code(200,"OK");
+
+        static Code BAD_REQUEST = new Code(400,"Bad Request");
+
+        static Code NOT_FOUND = new Code(404,"Not Found");
+
+        static Code METHOD_NOT_ALLOWED = new Code(405,"Method Not Allowed");
+    }
+
+    private Code code;
+
+    private Content content;
+
+    private ByteBuffer headerBuffer;
+
+
+    private static String CRLF = "\r\n";
+
+    private static Charset ascii = Charset.forName("US-ASCII");
+
+    public Reply(Code code, Content content) {
+        this.code = code;
+        this.content = content;
+    }
+
+    /**
+     * 这个方法负责添加请求头
+     * @return
+     */
+    private ByteBuffer headers(){
+        CharBuffer cb = CharBuffer.allocate(1024);
+        cb.put("HTTP/1.0 ").put(code.toString()).put(CRLF);
+        cb.put("Server: niossl/0.1").put(CRLF);
+        cb.put("Content-type: ").put(content.type()).put(CRLF);
+        cb.put("Content-length: ")
+                .put(Long.toString(content.length())).put(CRLF);
+        cb.put(CRLF);
+        cb.flip();
+        return ascii.encode(cb);
+    }
 
 
 
+    @Override
+    public void prepare() throws IOException {
+        content.prepare();
+        headerBuffer = headers();
+    }
 
+    @Override
+    public boolean send(ChannelIO channelIO) throws IOException {
+         // 先写请求头
+        if (headerBuffer.hasRemaining()){
+            if (channelIO.write(headerBuffer) <= 0)
+                return true;
+        }
+        // 再写响应内容
+        if (content.send(channelIO))
+            return true;
+        return false;
+    }
+
+    @Override
+    public void release() {
+        content.release();
+    }
+}
+```
+
+### 现在开始组合请求和响应
+
+现在我们请求和响应组件都齐活了，现在就可以将这两个组件组合起来干活了，这里我处理的流程为接收数据、解析数据、构建响应、发送数据。这个组合流程类就是按照这个流程来写的， 如下所示:
+
+```java
+public class RequestServicer implements Runnable {
+
+
+    private ChannelIO channelIO;
+
+    public RequestServicer(ChannelIO channelIO) {
+        this.channelIO = channelIO;
+    }
+
+    private void service() throws IOException {
+        ByteBuffer byteBuffer = receive(); // 接收数据
+        Request request = null;
+        Reply reply = null;
+        try {
+            request = Request.parse(byteBuffer);
+        } catch (RequestException e) {
+            reply = new Reply(Reply.Code.BAD_REQUEST, new StringContent(e));
+        }
+        // 说明正常解析
+        if (reply == null) {
+            reply  = build(request); // 构建回复
+        }
+        reply.prepare();
+        do {} while (reply.send(channelIO));         // Send
+    }
+
+    @Override
+    public void run() {
+        try {
+            service();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    ByteBuffer receive() throws IOException {
+        for (; ; ) {
+            int read = channelIO.read();
+            ByteBuffer bb = channelIO.getReadBuf();
+            if ((read < 0) || (Request.isComplete(bb))) {
+                bb.flip();
+                return bb;
+            }
+        }
+    }
+
+    Reply build(Request rq) throws IOException {
+
+        Reply rp = null;
+        Request.Action action = rq.action();
+        if ((action != Request.Action.GET)) {
+            rp = new Reply(Reply.Code.METHOD_NOT_ALLOWED,
+                    new StringContent(rq.toString()));
+            rp.prepare();
+            return rp;
+        }
+        rp = new Reply(Reply.Code.OK,
+                new StringContent("hello world"));
+        rp.prepare();
+        return rp;
+    }
+}
+```
+
+#### 在BlockingServer里面组合
+
+```java
+public class BlockingServer extends Server{
+
+    private static final ExecutorService POOL  = Executors.newFixedThreadPool(8);
+
+
+    public BlockingServer(int port, int backlog, boolean secure) throws IOException {
+        super(port, backlog, secure);
+    }
+
+    @Override
+    protected void runServer() throws IOException {
+        SocketChannel socketChannel = serverSocketChannel.accept();
+        ChannelIO channleIO = ChannelIO.getInstance(socketChannel, true);
+        RequestServicer requestServicer = new RequestServicer(channleIO);
+        POOL.submit(requestServicer);
+    }
+}
+```
+
+运行代码，在浏览器里面访问localhost:8080，就能看到helloWorld了，但是我们的HTTP服务器仍然存在一些问题，你会发现第一次回应请求很快，第二次回应请求就很慢，这是代码有问题，我们后面放着优化。
 
 ## 总结一下
 
+这篇文章的创作时间远远比自己想象的时间长，本来想偷个懒，不在介绍计算机网络的演化和网络编程的基本概念，但是又想做到轻量级的阅读体验，就又重新梳理了一下自己对网络的理解，翻了翻自己以前的文章，发现自己对网络的理解，从下层到上层的演化这一层还是很模糊，幸运的是在知乎看到了一篇讲解网络发展历史的文章, 见参考文档[1]。本篇也是为后面的用JavaFX做简单通信软件的铺垫，承前启后。本篇完成的HTTP服务器是比较初级的，就是访问localhost:8080, 在浏览器上会返回hello world，后面会再补充上文件类型，使用零拷贝技术来实现。后面再用NIO、Netty再实现一遍。先去实践，有了实践再去看Netty的源码，分析其原理。写本篇的时候，我也在有意识的去舍弃过去手册式的写法，我用的是我喜欢教科书的风格，力图把读者当成朋友，平等对待，娓娓谈心，我不仅告诉了哪些是对的，还告知了我的探索过程，就是我是如何得出这个结论的，写HTTP服务器的时候，我自认为比较熟悉了，但真正动笔的时候才发现，自己有些地方还是理解不对，颇有点纸上得来终觉浅，绝知此事要躬行的感觉。我在给出设计的时候，总是先给出目标，再给出我为什么要这么设计，诸君完全可以写出跟我完全不同的代码，原理本质的东西我都告诉了诸君。
 
+本篇基本参考的事JDK 8的demo，JDK 8给了新特性的示例，我看了这个代码觉得比较有趣，就觉得以自己的方式来解读一下，本身预先设定的目标倒是没有这么多，写着写着内容就变得庞大了起来，本来还打算介绍一下面向对象设计，接口的动机，都糅合在本篇想来比较大了，太大的内容，整体上内容似乎也不连贯，后面用NIO重写的时候，会尝试将这些进行分拆，增加一下阅读体验。
 
-
-
-
+强调一下，关于网络的演化，主要参考的是参考资料[1]，关于网络演化的这方面写的真不错。
 
 ## 参考资料
 
-- 有了 IP 地址，为什么还要用 MAC 地址？ https://www.zhihu.com/question/21546408
-- java socket编程中参数backlog的含义 
-- TCP 协议简介 https://www.ruanyifeng.com/blog/2017/06/tcp-protocol.html
-- HTTP 消息结束的标志  https://www.jtr109.com/posts/http-end-identity/
+[1] 有了 IP 地址，为什么还要用 MAC 地址？ https://www.zhihu.com/question/21546408
+
+[2] java socket编程中参数backlog的含义 
+
+[3] TCP 协议简介 https://www.ruanyifeng.com/blog/2017/06/tcp-protocol.html
+
+[4] HTTP 消息结束的标志  https://www.jtr109.com/posts/http-end-identity/
+
+[5] 浅入深出谭谈 HTTP 响应拆分（CRLF Injection）攻击（上） https://xz.aliyun.com/t/9707
