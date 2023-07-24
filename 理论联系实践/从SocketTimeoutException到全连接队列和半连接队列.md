@@ -67,9 +67,23 @@ Exception in thread "main" java.net.SocketTimeoutException: Read timed out
 	at org.example.HttpClientDemo.main(HttpClientDemo.java:47)
 ```
 
-所以直接一点的原因就是接口长时间没给到我们响应？ 有没有可能是调用的时候，对方请求刚好在GC呢，导致接口没在指定时间给到响应，观察监控发现调用失败发生的时候，并没有发生GC动作，那是为什么呢？  我们来分析当时的请求被处理的流程。被调用方的架构是:
+所以直接一点的原因就是接口长时间没给到我们响应？我的解决方式也很简单，直接延长超时时间，心满意足关闭了bug，然后没好多久，问题依然发生了。那我们接着分析这个问题为什么会出现，我们知道JVM在执行GC的时候，会STW，所以有没有可能是调用的时候，对方请求刚好在GC呢，导致接口没在指定时间给到响应，观察监控发现调用失败发生的时候，并没有发生GC动作， 接着往下排除, 我们来分析当时的请求被处理的流程。被调用方的架构是:
 
 ![](https://a.a2k6.com/gerald/i/2023/07/23/xp3s.jpg) 
 
-请求首先到达Nginx，然后负载均衡到Tomcat中，那么Tomcat是如何处理请求的呢，当时的Tomcat版本肯定是大于8的，那么想来Tomcat就是在NIO模式下面来处理请求的，一个请求到达
+请求首先到达Nginx，然后负载均衡到Tomcat中，那么Tomcat是如何处理请求的呢，当时的Tomcat版本肯定是大于8的，那么想来Tomcat就是在NIO模式下面来处理请求的，那么一个请求在到达Tomcat之后是如何被Tomcat处理的呢？ 这点我们来结合Tomcat的源码来进行说明, 首先启动Tomcat之后，会有几个核心线程:
 
+- Acceptor  线程
+- 
+
+
+
+
+
+
+
+
+
+## 参考资料
+
+- Tomcat源码篇之HTTP请求处理流程  https://www.wormholestack.com/archives/649/
