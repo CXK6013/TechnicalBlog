@@ -42,11 +42,19 @@ static {
 }
 ```
 
-那有没有别的方式，能够触发这个静态代码块的执行呢?  Java是一门面向对象的编程语言，数据与行为的结合体就是对象，对象是具体的，在Java中要定义对象首先就要有一个类，类是对象的模板，在这个模板中定义了对象的行为、成员变量、静态变量等，在Java中要使用对象，首先我们要引入这个类，然后就可以通过类开放的方法来创建对象,  也就是说在使用对象之前JVM里面要将对应的类加载进入JVM，将类加载进入JVM的工作由类加载器承担，想起之前写的一篇文章《今天我们来聊聊单例模式和枚举》中提到的一个类从被加载到虚拟机内存为止，它的整个生命周期会经历加载(Loading)、验证(Verification)、准备(Preparation)、解析(Resolution)、初始化(Initialization)、使用(Using)和卸载(Unloading) 七个阶段:
+那有没有别的方式，能够触发这个静态代码块的执行呢? 类整个生命周期会经历加载(Loading)、验证(Verification)、准备(Preparation)、解析(Resolution)、初始化(Initialization)、使用(Using)和卸载(Unloading) 七个阶段:
 
 ![](https://a.a2k6.com/gerald/i/2023/09/09/7ur1t.jpg)
 
-如上图所示，加载、验证、准备、初始化和卸载这个五个阶段的顺序是确定的，类型的加载过程必须按照这种顺序按部就班地开始，注意这里说的是按部就班的开始，意识是不是等加载完成之后，触发验证，这些阶段通常都是互相交叉地混合进行的，会在一个阶段执行的过程中调用、激活另一个阶段。解析则不一定，原因在于，它在某些情况下可以在初始化阶段之后，这是为了支持Java语言的运行时绑定特性，也称为动态绑定或晚期绑定。那什么是静态绑定、什么是动态绑定？ 让我们来看下面这个例子:
+如上图所示，加载、验证、准备、初始化和卸载这个五个阶段的顺序是确定的，类型的加载过程必须按照这种顺序按部就班地开始，注意这里说的是按部就班的开始，意思是不是等加载完成之后，触发验证，这些阶段通常都是互相交叉地混合进行的，会在一个阶段执行的过程中调用、激活另一个阶段。解析则不一定，原因在于，它在某些情况下可以在初始化阶段之后，这是为了支持Java语言的运行时绑定特性，也称为动态绑定或晚期绑定。那什么是静态绑定、什么是动态绑定？所谓绑定指的是:
+
+> 
+
+
+
+
+
+ 让我们来看下面这个例子:
 
 ```java
 public class NewClass {
@@ -78,9 +86,38 @@ print() superclass is called
 print() superclass is called
 ```
 
+我们通过语句一和语句二创建了一个SuperClass对象，和一个SubClass对象，因为SuperClass是SubClass的父类，所以我们可以用SuperClass的指向我们创建的子类对象，由于静态方法不会被重载，所以编译器在编译期就知道要调用哪个打印方法，也没有任何歧义。这也就是静态绑定，于编译期就能知道该调用父类的方法。现在让我们将上面的方法稍作改动:
 
+```java
+public class GFG {
+    public static class Superclass {
+        void print() {
+            System.out.println("print in superclass is called");
+        }
+    }
+    public static class Subclass extends Superclass {
+        @Override
+        void print() {
+            System.out.println("print in subclass is called");
+        }
+    }
+    public static void main(String[] args) {
+        Superclass A = new Superclass();
+        Superclass B = new Subclass();
+        A.print();
+        B.print();
+    }
+}
+```
 
+输出结果为:
 
+```java
+print in superclass is called
+print in subclass is called
+```
+
+ 我们将print方法变成了非静态方法，
 
 - 加载:  
 
@@ -167,3 +204,5 @@ public static boolean isSystemDomainLoader(ClassLoader var0) {
 [5] 《深入理解Java虚拟机：JVM高级特性与最佳实践（第3版）》周志明 著
 
 [6] Static vs Dynamic Binding in Java  https://www.geeksforgeeks.org/static-vs-dynamic-binding-in-java/
+
+[7] Static Vs. Dynamic Binding in Java https://stackoverflow.com/questions/19017258/static-vs-dynamic-binding-in-java
