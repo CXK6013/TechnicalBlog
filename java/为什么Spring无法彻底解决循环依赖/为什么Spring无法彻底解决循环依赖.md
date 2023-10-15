@@ -106,7 +106,7 @@ public class AService {
 
 这里面暗含的意思是项目在迭代的过程中会慢慢出现违背职责分离原则的状况，这就需要重构，代码不是一成不变的。看到这里可能就有同学会说了，你难道就想告诉我通过构造器做依赖注入的，Spring的默认加载机制无法解决循环依赖？ 你不是也说了嘛，通过@Lazy方式就可以解决了。所以你就想告诉我这些嘛，好无趣的文章。对此我想说，当然不是，请让我细细道来。
 
-## 为什么说无法彻底解决这个问题?
+## 溯源
 
 ### 先上代码
 
@@ -168,7 +168,60 @@ public class Application {
 }
 ```
 
-上面的代码来自于https://github.com/patoi/spring-boot-issues/tree/gh-6045/gh-6045，这个问题也是这个issue报出来的，本篇的文章就是依托于这个issue而展开的，运行这段代码，你会发现在windows上面都是正常工作的，那照正常流程是不是可以说没有复现呢，当然不能，因为在其他操作系统上会有不同的表现，那问题该如何复现呢? 让我们首先从@ComponentScan是如何起作用开始说起。
+上面的代码来自于https://github.com/patoi/spring-boot-issues/tree/gh-6045/gh-6045，这个问题也是这个issue报出来的，本篇的文章就是依托于这个issue而展开的，运行这段代码，你会发现在windows上面都是正常工作的，那照正常流程是不是可以说没有复现呢，当然不能，因为在其他操作系统上会有不同的表现，那问题该如何复现呢? 我们可以再切换成一个等价的例子: 
+
+```java
+@Component
+public class ATest0 {
+
+    private ATest1 a;
+    
+    @Autowired
+    public void setA(ATest1 a) {
+        this.a = a;
+    }
+}
+@Component
+public class ATest1 {
+    private final ATest0 a;
+
+    public ATest1(ATest0 a) {
+        this.a = a;
+    }
+}
+```
+
+尽管产生了循环依赖还是可以正常工作的，在包里面的文件顺序是ATest0在ATest1前面，ATest0是set注入，ATest1是构造器注入，如果让构造器注入的文件顺序在set注入之前呢，也就是说我们将ATest1修改名称为ATest0，而将ATest0改为ATest1:
+
+```java
+@Component
+public class ATest0 {
+    
+   private final ATest1 a;
+    
+   public ATest0(ATest1 a) {
+        this.a = a;
+    }
+}
+@Component
+public class ATest1 {
+
+    private ATest0 a;
+
+    @Autowired
+    public void setA(ATest0 a) {
+        this.a = a;
+    }
+}
+```
+
+就会报循环依赖的错误:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/2oz8.jpg)
+
+
+
+这里其实可以下基本结论就是初始化Bean的顺序不同会导致循环依赖，尽管事实上你不应该写出循环依赖，但我们还是要分析一下问题出在哪里。  让我们首先从@ComponentScan是如何起作用开始说起。
 
 ### @ComponentScan 如何起作用
 
@@ -192,27 +245,7 @@ public class Application {
 protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 		Assert.notEmpty(basePackages, "At least one base package must be specified");
 		Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
-		for (String basePackage : basePackages) {
-            // 从包里面构造BeanDefinition
-			Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
-			for (BeanDefinition candidate : candidates) {
-				ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
-				candidate.setScope(scopeMetadata.getScopeName());
-				String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
-				if (candidate instanceof AbstractBeanDefinition) {
-                    // 设置是否自动装配
-					postProcessBeanDefinition((AbstractBeanDefinition) candidate, beanName);
-				}
-				if (candidate instanceof AnnotatedBeanDefinition) {
-                    // 设置懒加载等属性
-					AnnotationConfigUtils.processCommonDefinitionAnnotations((AnnotatedBeanDefinition) candidate);
-				}
-                // 判断这个bean是否已经注册了
-				if (checkCandidate(beanName, candidate)) {
-					BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
-					definitionHolder =
-							AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
-					beanDefinitions.add(definitionHolder);
+		for (String basePackage : basz(definitionHolder);
                     // 注册bean
 					registerBeanDefinition(definitionHolder, this.registry); // 语句二
 				}
@@ -257,6 +290,16 @@ registerBeanDefinition的逻辑如下:
 
 ![](https://a.a2k6.com/gerald/i/2023/10/06/11642.jpg)
 
+#### 总结一下这个阶段
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/3r7ts.jpg)
+
+在registerBeanDefinition这个方法也就还是将beanName和beanDefinition放到一个map里，将beanDefinitionName放到一个List里面，然后就结束了。
+
+那什么时候开始正式创建Bean呢，还得从SpringApplication的run方法开始看起。
+
+### 那什么时候才正式开始创建bean
+
 Spring Boot启动的流程是由main线程调用SpringApplication的run方法启动:
 
 ![](https://a.a2k6.com/gerald/i/2023/10/06/7erlj.jpg)
@@ -297,7 +340,56 @@ public final void refresh() throws BeansException, IllegalStateException {
 
 ![](https://a.a2k6.com/gerald/i/2023/10/06/s60.jpg)
 
-getBean => doGetBean => createBean => doCreateBean => createBeanInstance
+这个getBean往下看事实上是调用了doGetBean:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/2w3v.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/rmfhd.jpg)
+
+​		然后我们看下getSingleton方法的执行逻辑:
+
+  		![](https://a.a2k6.com/gerald/i/2023/10/15/2wn1.jpg)
+
+那它是怎么判定的呢? 
+
+```java
+
+private final Set<String> inCreationCheckExclusions = Collections.newSetFromMap(new ConcurrentHashMap<>(16));
+
+private final Set<String> singletonsCurrentlyInCreation = Collections.newSetFromMap(new ConcurrentHashMap<>(16));
+
+protected void beforeSingletonCreation(String beanName) {
+  if (!this.inCreationCheckExclusions.contains(beanName) && !this.singletonsCurrentlyInCreation.add(beanName)) {
+			throw new BeanCurrentlyInCreationException(beanName);
+  }
+}
+```
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/40n7t.jpg)
+
+ 那想来逻辑是先创建ATest0，然后向这个Set里面添加，创建ATest0这个Bean需要ATest1,然后再次走了这段逻辑，但是ATest1在创建的时候又需要ATest0，然后接着走了这段逻辑，原来是这么判断循环依赖的呀。
+
+我们还是回到创建Bean的那段逻辑，也就是DefaultListableBeanFactory的preInstantiateSingletons，来跟一下ATest0是如何被实例化的, 其实还是上面的逻辑:
+
+getBean => doGetBean => 执行到getSingleton方法，传入了一个lambda函数去创建Bean。
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/4bf0k.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/4btfa.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/2bb.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/lzuc.jpg)
+
+然后在这个方法调试，就不知道怎么回事跳到createBean了:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/n9ql.jpg)
+
+我调试了好几次，都没有捕捉到是怎么调到这里的，于是想到了获取当前方法的调用栈来观察:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/ndtf.jpg)
+
+那到这里说明我们的想法是正确的，就是创建ATest1需要ATest0，然后去创建ATest0，然后发现创建ATest0做依赖注入需要ATest1，接着创建ATest1，于是触发了循环依赖检查的方法beforeSingletonCreation抛出异常。到这里我们已经发现了，如果set注入在前面就没问题。那么为什么在windows上就没问题呢，放到服务器上就出现了循环依赖呢？ 让我们从classpath说起。
 
 ### 被忽视的classpath
 
@@ -311,11 +403,54 @@ getBean => doGetBean => createBean => doCreateBean => createBeanInstance
 System.out.println(System.getProperty("java.class.path"));
 ```
 
-就会发现输出的有当前项目target目录的全路径，我的项目名是simple-spring，所以输出的路径是D:\IdeaProjects\simple-spring\target\classes，注意到项目启动依赖的class放在不同的文件夹下，然后就会输出多个路径，在windows上分隔符是；在 Solaris 系统中以冒号（:）分隔类路径。看到这里可能有同学就会问了，你讲这个类路径跟循环依赖有什么关系嘛，
+就会发现输出的有当前项目target目录的全路径，我的项目名是simple-spring，所以输出的路径是D:\IdeaProjects\simple-spring\target\classes，注意到项目启动依赖的class放在不同的文件夹下，然后就会输出多个路径，在windows上分隔符是；在 Solaris 系统中以冒号（:）分隔类路径。在IDEA启动的时候找的是target下面的class。但是我们启动的时候用java -jar命令启动的，这里就有些不一样，那么究竟是哪里不一样呢？
 
-### 系统函数惹的祸
+### 哪里不一样呢？
 
-![image-20231007121830678](C:\Users\xingke\AppData\Roaming\Typora\typora-user-images\image-20231007121830678.png)
+回到扫描包的代码中去，也就是ClassPathBeanDefinitionScanner的doScan方法：
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/3dn4.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/nr0a.jpg)
+
+  我们看下它是如何读取的:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/nx5e.jpg)
+
+那我们以java -jar方式调试的时候走的是哪个方法，我们在IDEA以jar的方式运行然后调试，那么要在IDEA里面调试jar应当怎么做呢:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/hiw.jpg)
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/4o345.jpg)
+
+然后会发现在jar模式下:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/o307.jpg)
+
+然后一直往下走会走到doFindPathMatchingJarResources这个方法里面，也就是从jar里面提取文件:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/of6z.jpg)
+
+​	拿到jarFile之后遍历获取jar文件:
+
+![](https://a.a2k6.com/gerald/i/2023/10/15/3jbf.jpg)
+
+其实到这一步基本上已经拿到了jar中class文件，那么是在哪一步拿的呢，在roorDirURL.openConnection 进入下一步发现进不去，原因在于我们的pom里面缺少依赖:
+
+```xml
+<dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-loader-tools</artifactId>
+            <version>2.7.14</version>
+ </dependency>
+ <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-loader</artifactId>
+            <version>2.7.14</version>
+</dependency>
+```
+
+补上这两个依赖就会发现能接着往下看了，
 
 ## 总结一下
 
@@ -336,5 +471,4 @@ System.out.println(System.getProperty("java.class.path"));
 [4] 循环依赖中的 一个set注入，一个构造器注入 https://zhuanlan.zhihu.com/p/484570587?
 
 [5] getBean简单介绍 https://www.cnblogs.com/zfcq/p/15925542.html
-
 
