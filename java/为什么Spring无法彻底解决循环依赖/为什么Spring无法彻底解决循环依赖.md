@@ -1,6 +1,6 @@
-# 一次循环依赖的探查笔记
+# 记一次排查循环依赖的经历
 
-[TOC]
+
 
 ## 前言
 
@@ -23,7 +23,7 @@ public class B{
 }
 ```
 
-上面的代码非常简单，我们在启动Spring Boot web项目的时候会首先加载容器，容器扫描到类A上面，发现A上面有Service主键，就会创建A类的实例，然后再创建的时候发现成员变量需要注入，于是就去创建B，扫描到B的时候发现B需要A来注入，但是注意此时我们就是因为扫描到A才来创建B，但是再创建B的时候又需要A，这就像是鸡生蛋的问题。这也就是循环依赖，存在两个类A、B，A里面的成员变量有B，B里面的成员有A。但是上面的代码在Spring Boot web启动的时候，还是能启动的。这让我想到是不是我的Spring Boot 版本比较低，默认是允许循环依赖，我想起Spring 2.6.x版本开始禁用循环依赖，改为由一个开关控制:
+上面的代码非常简单，我们在启动Spring Boot web项目的时候会首先加载容器，容器扫描到类A上面，发现A上面有Service注解，就会创建A类的实例，然后再创建的时候发现成员变量需要注入，于是就去创建B，扫描到B的时候发现B需要A来注入，但是注意此时我们就是因为扫描到A才来创建B，但是再创建B的时候又需要A，这就像是鸡生蛋的问题。这也就是循环依赖，存在两个类A、B，A里面的成员变量有B，B里面的成员有A。但是上面的代码在Spring Boot web启动的时候，还是能启动的。这让我想到是不是我的Spring Boot 版本比较低，默认是允许循环依赖，我想起Spring 2.6.x版本开始禁用循环依赖，改为由一个开关控制:
 
 ```yaml
 spring:
@@ -221,7 +221,11 @@ public class ATest1 {
 
 
 
-这里其实可以下基本结论就是初始化Bean的顺序不同会导致循环依赖，尽管事实上你不应该写出循环依赖，但我们还是要分析一下问题出在哪里。  让我们首先从@ComponentScan是如何起作用开始说起。
+这里其实可以下基本结论就是初始化Bean的顺序不同会导致循环依赖，尽管事实上你不应该写出循环依赖，但我们还是要分析一下问题出在哪里。 到这里说个省流的答案吧，部分循环依赖依赖于创建bean的顺序，而bean的创建顺序又依赖于从jar中提取class文件的顺序，而从jar中提取class文件的顺序又依赖于maven等打包工具添加class的顺序，而maven打包扫描的顺序在不同平台上无法保证一致，因此导致了windows上面没有出现循环依赖，部分Linux版本出现了循环依赖。
+
+除此之外，Spring是如何判断项目里面有循环依赖的呢，在创建Bean之前会将这个bean的名称放到一个set里面，如果这个bean需要其他bean的注入，我们姑且就用A来代称，然后就转而去寻找其他bean，这个被需要的bean还没有被创建，被需要的bean就用B来代称，就去创建B，然后向这个集合里面添加B，set里面就有A和B，发现B需要A，然后接着创建A，发现A在集合里面已经有了，因此判定出现了循环依赖。因为Bean的创建是一个自动化的过程，在根据Bean定义去创建的过程是发现A创建的过程中需要B，转而就去寻找B，没有就创建，检查也就是在创建Bean的时候进行检查。
+
+下面是详细的探索过程， 让我们首先从@ComponentScan是如何起作用开始说起。
 
 ### @ComponentScan 如何起作用
 
@@ -245,8 +249,24 @@ public class ATest1 {
 protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 		Assert.notEmpty(basePackages, "At least one base package must be specified");
 		Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
-		for (String basePackage : basz(definitionHolder);
-                    // 注册bean
+		for (String basePackage : basePackages) {
+            // 这里去包里面提取class文件并构造成bean
+			Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
+			for (BeanDefinition candidate : candidates) {
+				ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
+				candidate.setScope(scopeMetadata.getScopeName());
+				String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
+				if (candidate instanceof AbstractBeanDefinition) {
+					postProcessBeanDefinition((AbstractBeanDefinition) candidate, beanName);
+				}
+				if (candidate instanceof AnnotatedBeanDefinition) {
+					AnnotationConfigUtils.processCommonDefinitionAnnotations((AnnotatedBeanDefinition) candidate);
+				}
+				if (checkCandidate(beanName, candidate)) {
+					BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
+					definitionHolder =
+							AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
+					beanDefinitions.add(definitionHolder);
 					registerBeanDefinition(definitionHolder, this.registry); // 语句二
 				}
 			}
@@ -346,9 +366,11 @@ public final void refresh() throws BeansException, IllegalStateException {
 
 ![](https://a.a2k6.com/gerald/i/2023/10/15/rmfhd.jpg)
 
-​		然后我们看下getSingleton方法的执行逻辑:
+​	然后我们看下getSingleton方法的执行逻辑:
 
-  		![](https://a.a2k6.com/gerald/i/2023/10/15/2wn1.jpg)
+​	![](https://a.a2k6.com/gerald/i/2023/10/15/2wn1.jpg)
+
+
 
 那它是怎么判定的呢? 
 
@@ -450,15 +472,299 @@ System.out.println(System.getProperty("java.class.path"));
 </dependency>
 ```
 
-补上这两个依赖就会发现能接着往下看了，
+然后进入下一步: 
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/3rgdm.jpg)
+
+### 读取顺序是如何确定的呢？
+
+理一理目前的思绪，现在我们已知的是在Spring下面循环依赖与Bean的创建顺序有关，在上面的例子中我们已经看到，构造函数注入的bean先于Set注入，两个bean有循环依赖，Spring也没给我们解决，那么Bean的创建顺序又依赖于从jar里面读取class的顺序，那这个读取顺序是怎么确定的呢？ 在openConnection里面执行了语句一:
+
+```java
+@Override
+protected URLConnection openConnection(URL url) throws IOException {
+   if (this.jarFile != null && isUrlInJarFile(url, this.jarFile)) {
+      return JarURLConnection.get(url, this.jarFile); // 语句一
+   }
+   try {
+      return JarURLConnection.get(url, getRootJarFileFromUrl(url));
+   }
+   catch (Exception ex) {
+      return openFallbackConnection(url, ex);
+   }
+}
+```
+
+然后我们再看doFindPathMatchingJarResources方法，拿到URLConnection，走的逻辑是:
+
+```java
+if (con instanceof JarURLConnection) {
+   // Should usually be the case for traditional JAR files.
+   JarURLConnection jarCon = (JarURLConnection) con;
+   ResourceUtils.useCachesIfNecessary(jarCon);
+   jarFile = jarCon.getJarFile();
+   jarFileUrl = jarCon.getJarFileURL().toExternalForm();
+   JarEntry jarEntry = jarCon.getJarEntry();
+   rootEntryPath = (jarEntry != null ? jarEntry.getName() : "");
+}
+```
+
+```java
+Set<Resource> result = new LinkedHashSet<Resource>(8);
+// 也就是获取jarFile的entries迭代
+for (Enumeration<JarEntry> entries = jarFile.entries(); entries.hasMoreElements();) {
+   JarEntry entry = entries.nextElement(); 
+   String entryPath = entry.getName();
+   if (entryPath.startsWith(rootEntryPath)) {
+      String relativePath = entryPath.substring(rootEntryPath.length());
+      // 满足条件 
+      if (getPathMatcher().match(subPattern, relativePath)) {
+         // 将其加入到result里面,
+         result.add(rootDirResource.createRelative(relativePath));
+      }
+   }
+}
+```
+
+result是Set集合，Set是无序的？ 但带上了Linked，所以内部有一个链表实现？ 我们看下他的注释:
+
+> Hash table and linked list implementation of the Set interface, with predictable iteration order. This implementation differs from HashSet in that it maintains a doubly-linked list running through all of its entries
+>
+> Set 接口的哈希表和链表实现，具有可预测的迭代顺序。这种实现方式与 HashSet 不同，它维护一个贯穿所有条目的双链表。该链表定义了迭代顺序，即元素插入集合的顺序（插入顺序）。
+
+所以遍历顺序即为插入顺序，而插入顺序即为创建bean的顺序，那迭代顺序是如何确定的?  我们在openConnection可以看到在执行这个方法的时候，里面的成员变量jarFile已经完成了初始化，那么这个初始化是在什么时候执行的呢，我们找下这个Handler的构造函数，看看这个构造函数在什么时候被调用, 注意这个Handler是位于org.springframework.boot.loader.jar下面，里面刚好有一个这样的构造函数:
+
+```java
+public Handler(JarFile jarFile) {
+   this.jarFile = jarFile;
+}
+```
+
+我们还是找Handler这个类在哪里被调用:
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/jch.jpg)
+
+那JarFile又是被谁调用的呢？
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/569fp.jpg)
+
+看源码吧，就是这么试探，试试这个，找这个JarFile的使用地方太多了，不好看，就找到这个构造函数去看看再哪里被使用，如果试错了，就接着试探别的，科学的精神就是如此，大胆猜想。然后我们转到JarFileArchive这个类去打断点，看看这个类的调用栈:
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/57cl0.jpg)
+
+JarFile的entries方法就是个迭代器，那么里面的逻辑是什么样呢? 
+
+```java
+@Override
+public Enumeration<java.util.jar.JarEntry> entries() {
+    return new JarEntryEnumeration(this.entries.iterator());
+}
+```
+
+那entries是在什么时候赋值的呢？ 
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/5atm5.jpg)
+
+然后这个entries顺序还是没找到在哪里？难道是方向错了？ 再看一眼读取jarFile的逻辑：
+
+```
+Set<Resource> result = new LinkedHashSet<>(8);
+    for (Enumeration<JarEntry> entries = jarFile.entries(); entries.hasMoreElements();) {
+		JarEntry entry = entries.nextElement();
+		String entryPath = entry.getName();
+		if (entryPath.startsWith(rootEntryPath)) {
+			String relativePath = entryPath.substring(rootEntryPath.length());
+			if (getPathMatcher().match(subPattern, relativePath)) {
+						result.add(rootDirResource.createRelative(relativePath));
+			}
+		}
+}
+public java.util.jar.JarEntry nextElement() {
+	return this.iterator.next();
+}
+public JarEntry next() {
+	this.validator.run();
+    if (!hasNext()) {
+		 throw new NoSuchElementException();
+	 }
+	 int entryIndex = JarFileEntries.this.positions[this.index];
+	 this.index++;
+	 return getEntry(entryIndex, JarEntry.class, false, null);
+}
+```
+
+next方法是通过移动下标来实现访问Jar中文件信息的，这是不是意味着jar里面的文件顺序依赖于创建时候的创建顺序呢？如果没人干扰的话我想是的，于是问题就转变为了，打包时候的顺序是怎么确定的。那现在debug一下maven? 犯不上，犯不上，我们手里有GPT，可以请教一下GPT，然后GPT回答我AbstractJarMojo的createArchive方法，然后我就去看这个方法的源码: 
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/10jfb.jpg)
+
+
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/10vzm.jpg)
+
+这个调用的addDirectory的方法来自于AbstractArchiver，然后在这个方法里面传入的最终交给了PlexusIoFileResourceCollection:
+
+```java
+  public void addFileSet( @Nonnull final FileSet fileSet )
+        throws ArchiverException
+    {
+        final File directory = fileSet.getDirectory();
+        if ( directory == null )
+        {
+            throw new ArchiverException( "The file sets base directory is null." );
+        }
+
+        if ( !directory.isDirectory() )
+        {
+            throw new ArchiverException( directory.getAbsolutePath() + " isn't a directory." );
+        }
+
+        // The PlexusIoFileResourceCollection contains platform-specific File.separatorChar which
+        // is an interesting cause of grief, see PLXCOMP-192
+      	// 我们来看这个类
+        final PlexusIoFileResourceCollection collection = new PlexusIoFileResourceCollection();
+        collection.setFollowingSymLinks( false );
+
+        collection.setIncludes( fileSet.getIncludes() );
+        collection.setExcludes( fileSet.getExcludes() );
+        collection.setBaseDir( directory );
+        collection.setFileSelectors( fileSet.getFileSelectors() );
+        collection.setIncludingEmptyDirectories( fileSet.isIncludingEmptyDirectories() );
+        collection.setPrefix( fileSet.getPrefix() );
+        collection.setCaseSensitive( fileSet.isCaseSensitive() );
+        collection.setUsingDefaultExcludes( fileSet.isUsingDefaultExcludes() );
+        collection.setStreamTransformer( fileSet.getStreamTransformer() );
+        collection.setFileMappers( fileSet.getFileMappers() );
+        collection.setFilenameComparator( getFilenameComparator() );
+
+        if ( getOverrideDirectoryMode() > -1 || getOverrideFileMode() > -1 || getOverrideUid() > -1
+            || getOverrideGid() > -1 || getOverrideUserName() != null || getOverrideGroupName() != null )
+        {
+            collection.setOverrideAttributes( getOverrideUid(), getOverrideUserName(), getOverrideGid(),
+                                              getOverrideGroupName(), getOverrideFileMode(),
+                                              getOverrideDirectoryMode() );
+        }
+
+        if ( getDefaultDirectoryMode() > -1 || getDefaultFileMode() > -1 )
+        {
+            collection.setDefaultAttributes( -1, null, -1, null, getDefaultFileMode(), getDefaultDirectoryMode() );
+        }
+
+        addResources( collection );
+ }
+```
+
+然后接着看PlexusIoFileResourceCollection这个类的逻辑，看看添加进入的资源是怎么被处理的:
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/5fvu.jpg)
+
+```java
+public Iterator<PlexusIoResource> getResources()
+        throws IOException
+    {
+        final DirectoryScanner ds = new DirectoryScanner();
+        final File dir = getBaseDir();
+        ds.setBasedir( dir );
+        final String[] inc = getIncludes();
+        if ( inc != null && inc.length > 0 )
+        {
+            ds.setIncludes( inc );
+        }
+        final String[] exc = getExcludes();
+        if ( exc != null && exc.length > 0 )
+        {
+            ds.setExcludes( exc );
+        }
+        if ( isUsingDefaultExcludes() )
+        {
+            ds.addDefaultExcludes();
+        }
+        ds.setCaseSensitive( isCaseSensitive() );
+        ds.setFollowSymlinks( isFollowingSymLinks() );
+        ds.setFilenameComparator( filenameComparator );
+        ds.scan(); // 这里执行扫描动作
+
+        final List<PlexusIoResource> result = new ArrayList<>();
+        if ( isIncludingEmptyDirectories() )
+        {
+            String[] dirs = ds.getIncludedDirectories();
+            addResources( result, dirs );
+        }
+
+        String[] files = ds.getIncludedFiles();
+        addResources( result, files );
+        return result.iterator();
+    }
+```
+
+DirectoryScanner的scan方法事实上调用了scandir方法,scandir 开头有一句这个调用:
+
+```java
+// dir 是File类型
+String[] newfiles = dir.list();
+```
+
+```
+public String[] list() {
+    return normalizedList();
+}
+```
+
+```java
+private final String[] normalizedList() {
+    @SuppressWarnings("removal")
+    SecurityManager security = System.getSecurityManager();
+    if (security != null) {
+        security.checkRead(path);
+    }
+    if (isInvalid()) {
+        return null;
+    }
+    String[] s = fs.list(this);
+    if (s != null && getClass() != File.class) {
+        String[] normalized = new String[s.length];
+        for (int i = 0; i < s.length; i++) {
+            normalized[i] = fs.normalize(s[i]);
+        }
+        s = normalized;
+    }
+    return s;
+}
+```
+
+File的list实现在windows下面的实现是WinNTFileSystem，在Linux上的实现是UnixFileSystem ，list方法的实现如下:
+
+```java
+@Override
+public String[] list(File f) {
+        long comp = Blocker.begin();
+        try {
+            return list0(f);
+        } finally {
+            Blocker.end(comp);
+        }
+}
+private native String[] list0(File f);
+```
+
+接着看native的实现:
+
+![](https://a.a2k6.com/gerald/i/2023/10/21/130zi.jpg)
+
+所以最后还是系统函数在不同文件系统上的返回不一样，所以导致在不同bean的创建顺序不一样，导致在windows上正常运行的项目
 
 ## 总结一下
 
+如果你还能看到这里，在分析这个问题的时候想到Java的一次编译，处处运行，又想起对Java的调侃，一次编译，处处调试。分析这个问题的时候我一开始是知道Java获取目录下的文件，在不同的文件系统下面的表现是不同的，但一开始我认为是在扫描jar中的class文件的时候间接的调用了File的list或listFile这个方法，于是一直找，一直找，但是找着找着，发现自己的思路出现了问题，于是想到应该是这个顺序是在打包的时候就被确定了的，这个还是跟GPT对聊的时候，GPT给我了一定的提示，我才转变方向，这个提示我们要善于使用工具，因为你在问GPT的时候，相当于又整理了一遍上下文，整理的过程就会有新的线索。再有就是看源码也掌握了一些技巧，一方面调试的时候看每一步调用，有的时候一个方法下一步跳到你不知道的地方，这个时候可以接着IDEA的调用栈来观察，
 
+![](https://a.a2k6.com/gerald/i/2023/10/22/1crr.jpg)
 
+一方面也复习了一些语法:
 
+```java
+int entryIndex = JarFileEntries.this.positions[this.index];
+```
 
-
+JarFileEntries是内部类，所以访问外部成员变量就得通过这个引用去访问，刚看到这个还懵了一下，想来是因为工作中用到内部类不多，才导致对这个语法不熟悉。很久的时候，我以为看源码都有标准路线，事实上每个人看源码的过程形成的路线就是自己的标准路线，我以前一直以为自己的看源码的方式不对，所以看的磕磕绊绊的，但是事实上就是这样，无论你看了多少看源码的技巧，你总得自己一行行的debug，找出问题的答案，我看的时候总是感觉跟破案一样，在收集线索找到找到问题的答案，不断的回溯，这个过程也在不断的查资料。如果你仔细阅读了这篇文章，本篇其实在调试的过程有几个小技巧，就是看方法调用栈，然后调试的时候进行试探猜测，不要对猜测进行排斥，猜测也是一种探索的方式，然后猜他就是在这里调用的，然后验证，如果猜错了，然后再猜其他的，本身就是在揣测代码的运行，每一步可以不那么确定，不断梳理思绪，问题就会变得慢慢清晰起来。
 
 ## 参考资料
 
@@ -471,4 +777,6 @@ System.out.println(System.getProperty("java.class.path"));
 [4] 循环依赖中的 一个set注入，一个构造器注入 https://zhuanlan.zhihu.com/p/484570587?
 
 [5] getBean简单介绍 https://www.cnblogs.com/zfcq/p/15925542.html
+
+[6] Spring-Boot原理及应用布署(中信银行) https://www.cnblogs.com/aspirant/p/16143539.html
 
