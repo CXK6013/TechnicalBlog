@@ -1,4 +1,4 @@
-# 用Java来实现BIO和NIO模型的HTTP服务器(二) 
+# 用Java来实现BIO和NIO模型的HTTP服务器(二) NIO模型
 
 > 翻了一下(一)发现整体还是不大好, 这里重新再梳理一下
 
@@ -109,60 +109,578 @@ try (Socket socket = new Socket()){
 
 accept调用也应该放在whie(true)循环里面，所以代码应当改成下面这个样子：
 
+```java
+ServerSocket serverSocket = new ServerSocket();
+// 绑定在8080端口
+serverSocket.bind(new InetSocketAddress(8080));
+// 监听连接,该方法会阻塞到这里直到有连接建立完成
+// 发起系统调用
+while (true) {
+    try (Socket socket = serverSocket.accept()) {
+        try (InputStream socketInputStream = socket.getInputStream()) {
+            byte[] readByte = new byte[4096];
+            // 这里其实数据不见得立马可以读, 因为数据不代表立马可以读
+            // 发起系统调用
+            int readTotalNumber = socketInputStream.read(readByte);
+            String s = new String(readByte, 0, readTotalNumber);
+            System.out.println(s);
+        }
+    }
+}
+```
+
+在这种模型下同时只能处理一下一个连接，因为我们只有一个线程，这个链接的读取逻辑没处理完毕，下一个得等待在那里。我们这里解释一下，我们调用SocketInputStream的read函数的时候为什么不是立刻能读取，一般来说，一台能联网的计算机首先得有网卡不管是有线网卡还是无线网卡，数据经过路由器之后网线到达网卡，然后将数据包从网卡硬件缓存转移到内存中，然后通知内核处理，然后经过TCP/IP协议层处理，最后应用程序通过系统调用读取到发送过来的数据。
+
+![](https://a.a2k6.com/gerald/i/2023/12/16/wwak.jpg)
 
 
 
+上面的写法还面临的一个问题就是没有判断什么时候报文结束，如果是短链接即传输一次消息连接就关闭，那么read函数返回-1就代表数据结束，如果我们希望TCP连接保活，即保持这个链接，我们只是做示例，完整的会在下面构建HTTP服务器中详细讲述。
 
+如果你熟悉网络编程，还有一个网络异常会经常碰到: 
 
+```java
+Exception in thread "main" java.net.SocketException: Connection reset by peer
+```
+
+被对等方重置连接，这是啥意思？  相当于突然挂电话，这比单纯的不回应、让人等着更有礼貌。但这并不是真正有礼貌的TCP/IP的关闭方式。也就是说连接建立了，某一方突然关闭连接，另一方还在使用这个连接，就会出现这个异常。
 
 在《用Java的BIO和NIO、Netty来实现HTTP服务器(一) 》里面我们用的是在1.4引入的新API，这套API的优势就是比较统一，可以通过ServerSockeChannel的configureBlocking来制定使用BIO还是NIO，所以上面服务端的写法可以等价转换为: 
 
 ```java
 ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
 serverSocketChannel.bind(new InetSocketAddress(8080));
-while (true){
-	SocketChannel socketChannel = serverSocketChannel.accept();
-    ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
-    socketChannel.read(byteBuffer);
-    byteBuffer.flip();
-    byte[] readDataArray = new byte[byteBuffer.limit()];
-    byteBuffer.get(readDataArray);
-    String readData = new String(readDataArray);
-    System.out.println(readData);
+while (true) {
+    try (SocketChannel socketChannel = serverSocketChannel.accept()) {
+        ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+        socketChannel.read(byteBuffer);
+        byteBuffer.flip();
+        byte[] readDataArray = new byte[byteBuffer.limit()];
+        byteBuffer.get(readDataArray);
+        String readData = new String(readDataArray);
+        System.out.println(readData);
+    }
 }
 ```
 
-ByteBuffer是个容器，
-
-
-
-
-
-
+ByteBuffer基于byte数组封装了一些常见的操作，可以理解为一个容器，put存，get取，但是在取之前我们需要知道取到哪个位置，调用flip方法之后，调用limit方法之后就能知道ByteBuffer中放了多少元素。
 
 ## 前面面临的问题
 
-下面是前面设计的架构图
+(一)是七月份写的,这里我们在复习一下里面的内容, 我们希望构建用Java标准库，以及Java的NIO框架Netty实现一个简单的HTTP服务器，(一)是BIO模型，不管是NIO还是BIO，还是用框架构建，基于TCP协议的网络编程都会面临这样一个问题，首先是管理连接，也就是连接建立，连接建立之后我们读取数据，那么HTTP报文不固定大小，我们需要根据报文结束标志来判断是否读取结束，然后读取完整之后交给下一层去处理。但是NIO还是BIO他们具备共性，所以我们用继承来实现，我们首先抽象了一个Server的基础类:
+
+```java
+public abstract class Server {
+
+    protected ServerSocketChannel serverSocketChannel;
+
+    protected SSLContext sslContext;
+
+    static int port = 8000;
+
+    static int backlog = 1024;
+
+    static boolean secure = false;
+
+    public Server(int port, int backlog, boolean secure) throws IOException {
+        // 创建一个ServerSocketChannel
+        serverSocketChannel =  ServerSocketChannel.open();
+        /**
+         * 可以重用ip+端口这个链接,TCP以链接为单位,当TCP链接要关闭的时候，会等待一段时间再进行关闭,
+         * 如果我想要重用端口,那么channel就无法绑定,在绑定到对应地址之前,设定重用地址。即使在这个端口上的tcp连接
+         * 处于处于TIME_WAIT状态,我们仍然可以使用
+         */
+        serverSocketChannel.socket().setReuseAddress(true);
+        // 绑定端口和backlog
+        serverSocketChannel.bind(new InetSocketAddress(port),backlog);
+
+    }
+
+    /**
+     * 这里是抽象方法,我们后面要用NIO再实现一遍
+     * 所以这里交给子类来实现
+     */
+    protected  abstract void runServer();
+
+    /**
+     * 我们要写的是一个简单的HTTP服务器,
+     * 这个服务器可以从命令行方式启动的时候接收参数
+     * 我们可以选择从main函数
+     * @param args
+     */
+    public static void main(String[] args) throws IOException {
+        Server server = null;
+        if (args.length == 0){
+            System.out.println("http server running default model");
+            server = new BlockingServer(port,backlog,secure);
+            server.runServer();
+        }
+        // 端口目前先固定死, 我们目前只读一个参数
+        if ("B".equals(args[0])){
+            server = new BlockingServer(port,backlog,secure);
+        }else if ("N".equals(args[0])){
+            server = new NonBlockingServer(port,backlog,secure);
+        }else{
+            System.out.println("input args error only support B OR N");
+            return;
+        }
+        server.runServer();
+    }
+}
+
+public class BlockingServer extends Server {
+    
+    public BlockingServer(int port, int backlog, boolean secure) throws IOException {
+        super(port, backlog, secure);
+    }
+    
+    @Override
+    protected void runServer() throws IOException {
+        for (;;){
+            SocketChannel socketChannel = serverSocketChannel.accept();
+            ChannelIO channelIO = ChannelIO.getInstance(socketChannel, true);
+            RequestServicer requestServicer = new RequestServicer(channelIO);
+            requestServicer.run();
+        }
+    }
+}
+```
+
+我们用ServerSocketChannel这个为核心来构建HTTP服务器，原因是实现上更为统一，我们最终可以做成一个jar，所以我们根据命令行参数来决定是BIO还是NIO模型的服务器。启动之后应当是一个无限循环，不断接收连接，不断处理请求。连接建立之后，我们需要不断的读数据，这是NIO和BIO共同的特征，所以我们写了一个ChannelIO工具类，来实现对数据的读取：
+
+```java
+public class ChannelIO {
+
+    private SocketChannel socketChannel;
+
+    private ByteBuffer requestBuffer;
+
+    int defaultByteBufferSize = 4096;
+
+    private ChannelIO(SocketChannel socketChannel, boolean blocking) throws IOException {
+        this.socketChannel = socketChannel;
+        this.requestBuffer = ByteBuffer.allocate(4096);
+        this.socketChannel.configureBlocking(blocking);
+    }
 
 
+    public static ChannelIO getInstance(SocketChannel socketChannel, boolean blocking) throws IOException {
+        return  new ChannelIO(socketChannel,blocking);
+    }
+
+    public int read() throws IOException {
+        // 剩余的小于百分之五自动扩容
+        resizeByteBuffer(defaultByteBufferSize / 20);
+        return socketChannel.read(requestBuffer);
+    }
+
+    private void resizeByteBuffer(int remaining) {
+        if (requestBuffer.remaining() < remaining){
+            // 扩容一倍
+            ByteBuffer newRequestBuffer = ByteBuffer.allocate(requestBuffer.capacity() * 2);
+            // 转为读模式
+            requestBuffer.flip();
+            //  将旧的buffer放入到新的buffer中
+            newRequestBuffer.put(requestBuffer);
+            requestBuffer = newRequestBuffer;
+        }
+    }
+
+    public ByteBuffer getReadBuf(){
+        return this.requestBuffer;
+    }
+
+    public int write(ByteBuffer byteBuffer) throws IOException{
+        return socketChannel.write(byteBuffer);
+    }
+
+    public void close() throws IOException{
+        socketChannel.close();
+    }
+}
+```
+
+ChannelIO主要的几个作用就是读和写，默认的ByteBuffer为4096，但是报文大小有可能超过，所以这里我们读之前看看需不需要自动扩容，这个类被请求处理者所处理, 请求处理者要负责解析HTTP报文，HTTP报文有请求方式，有结束标志，有uri，这个解析的任务我们放在Request这个类来处理: 
+
+```java
+public class Request {
+
+    private Action action;
+
+    private URI uri;
+
+    private String version;
+
+    public Request(Action action, URI uri, String version) {
+        this.action = action;
+        this.uri = uri;
+        this.version = version;
+    }
+
+    static class Action{
+        private String name;
+
+        static Action GET = new Action("GET");
+
+        static Action POST = new Action("POST");
+
+        static Action PUT = new Action("PUT");
+
+        static Action HEAD = new Action("HEAD");
+
+        public Action(String name) {
+            this.name = name;
+        }
+        public String toString(){
+            return this.name;
+        }
+        static Action parse(String s){
+            if ("GET".equals(s)){
+                return GET;
+            }
+            if ("POST".equals(s)){
+                return POST;
+            }
+            if ("PUT".equals(s)){
+                return PUT;
+            }
+            if ("HEAD".equals(s)){
+                return HEAD;
+            }
+            // 参数不合法
+            throw new IllegalArgumentException(s);
+        }
+    }
 
 
+    public  static boolean isComplete(ByteBuffer byteBuffer){
+        int position = byteBuffer.position() - 4;
+        if (position < 0){
+            return false;
+        }
+        return byteBuffer.get(position + 0) == '\r'
+                && byteBuffer.get(position + 1) == '\n'
+                && byteBuffer.get(position + 2) == '\r'
+                && byteBuffer.get(position + 3) == '\n';
+    }
+
+    private static Charset ascii = StandardCharsets.US_ASCII;
+
+    /**
+     * 正则表达式 用来分割请求报文
+     * http 请求的报文是: GET /dir/file HTTP/1.1
+     *  Host: hostname
+     *  被正则表达式分割以后:
+     *      group[1] = "GET"
+     *      group[2] = "/dir/file"
+     *      group[3] = "1.1"
+     *      group[4] = "hostname"
+     */
+    private static Pattern requestPattern
+            = Pattern.compile("\\A([A-Z]+) +([^ ]+) +HTTP/([0-9\\.]+)$"
+                    + ".*^Host: ([^ ]+)$.*\r\n\r\n\\z",
+            Pattern.MULTILINE | Pattern.DOTALL);
+
+    public static  Request parse(ByteBuffer byteBuffer) throws RequestException {
+        // byte to char
+        CharBuffer charBuffer = ascii.decode(byteBuffer);
+        Matcher matcher = requestPattern.matcher(charBuffer);
+        // 未匹配
+        if (!matcher.matches()){
+            throw new  RequestException();
+        }
+        Action a;
+        try {
+            a = Action.parse(matcher.group(1));
+        }catch (IllegalArgumentException  e){
+            throw new RequestException();
+        }
+        URI u = null;
+        try {
+            u = new URI("http://" + matcher.group(4) + matcher.group(2));
+        }catch (URISyntaxException e){
+           throw new RequestException(e);
+        }
+        return new Request(a,u,matcher.group(3));
+    }
+}
+```
+
+这个类主要封装HTTP报文的请求方式、版本、URI。有Request就有Reply，一个HTTP响应通常情况下会有状态码和内容，这里我们的HTTP服务器将来要扩展到各种类型： 
+
+```java
+public interface Sendable {
+    // 做转码
+    void prepare() throws IOException;
+	// 发送动作
+    boolean send(ChannelIO channelIO);
+    
+    void release();
+}
+public interface Content extends Sendable {
+    // 发送类型
+    String type();
+    
+	// 长度
+    long length();
+}
+public class StringContent implements Content{
+
+    private String type;    // MIME type
+
+    private String content;
+
+    private ByteBuffer byteBuffer;
+
+    private static final Charset ascii = StandardCharsets.US_ASCII;
+
+    StringContent(CharSequence c, String t) {
+        content = c.toString();
+        type = t + "; charset=iso-8859-1";
+    }
+
+    StringContent(CharSequence c) {
+        this(c, "text/plain");
+    }
+
+    StringContent(Exception x) {
+        StringWriter sw = new StringWriter();
+        x.printStackTrace(new PrintWriter(sw));
+        type = "text/plain; charset=iso-8859-1";
+        content = sw.toString();
+    }
+
+    @Override
+    public String type() {
+        return type;
+    }
+
+    @Override
+    public long length() {
+        return byteBuffer.remaining();
+    }
+
+    @Override
+    public void prepare() throws IOException {
+        encode();
+        // 在写入之前就需要调用一下rewind方法
+        byteBuffer.rewind();
+    }
+
+    private void encode() {
+        if (byteBuffer == null){
+            byteBuffer =  ascii.encode(CharBuffer.wrap(content));
+        }
+    }
+
+    @Override
+    public boolean send(ChannelIO channelIO) throws IOException {
+        if (byteBuffer == null)
+            throw new IllegalStateException();
+        // 写的时候 不见得一次写完
+        channelIO.write(byteBuffer);
+        // hasRemaining 代表是否还有剩余
+        // 如果有剩余就可以写着写
+        return  byteBuffer.hasRemaining();
+    }
+
+    /**
+     * 这是个空方法
+     * 后面只是为了统一调用
+     */
+    @Override
+    public void release() {
+
+    }
+}
+```
+
+```java
+public class Reply implements Sendable {
+
+    static class Code{
+
+        private int number;
+
+        private String description;
+
+        public Code(int number, String description) {
+            this.number = number;
+            this.description = description;
+        }
+
+        static Code OK = new Code(200,"OK");
+
+        static Code BAD_REQUEST = new Code(400,"Bad Request");
+
+        static Code NOT_FOUND = new Code(404,"Not Found");
+
+        static Code METHOD_NOT_ALLOWED = new Code(405,"Method Not Allowed");
+    }
+
+    private Code code;
+
+    private Content content;
+
+    private ByteBuffer headerBuffer;
+
+
+    private static String CRLF = "\r\n";
+
+    private static Charset ascii = Charset.forName("US-ASCII");
+
+    public Reply(Code code, Content content) {
+        this.code = code;
+        this.content = content;
+    }
+
+    /**
+     * 这个方法负责添加请求头
+     * @return
+     */
+    private ByteBuffer headers(){
+        CharBuffer cb = CharBuffer.allocate(1024);
+        cb.put("HTTP/1.0 ").put(code.toString()).put(CRLF);
+        cb.put("Server: niossl/0.1").put(CRLF);
+        cb.put("Content-type: ").put(content.type()).put(CRLF);
+        cb.put("Content-length: ")
+                .put(Long.toString(content.length())).put(CRLF);
+        cb.put(CRLF);
+        cb.flip();
+        return ascii.encode(cb);
+    }
+
+    @Override
+    public void prepare() throws IOException {
+        content.prepare();
+        headerBuffer = headers();
+    }
+
+    @Override
+    public boolean send(ChannelIO channelIO) throws IOException {
+         // 先写请求头
+        if (headerBuffer.hasRemaining()){
+            if (channelIO.write(headerBuffer) <= 0)
+                return true;
+        }
+        // 再写响应内容
+        if (content.send(channelIO))
+            return true;
+        return false;
+    }
+
+    @Override
+    public void release() {
+        content.release();
+    }
+}
+```
+
+连接建立之后开始提取数据:
+
+```java
+public class RequestServicer implements Runnable {
+
+
+    private ChannelIO channelIO;
+
+    public RequestServicer(ChannelIO channelIO) {
+        this.channelIO = channelIO;
+    }
+
+    private void service() throws IOException {
+        ByteBuffer byteBuffer = receive(); // 接收数据
+        Request request = null;
+        Reply reply = null;
+        try {
+            request = Request.parse(byteBuffer);
+        } catch (RequestException e) {
+            reply = new Reply(Reply.Code.BAD_REQUEST, new StringContent(e));
+        }
+        // 说明正常解析
+        if (reply == null) {
+            reply  = build(request); // 构建回复
+        }
+        reply.prepare();
+        do {} while (reply.send(channelIO));         // Send
+    }
+
+    @Override
+    public void run() {
+        try {
+            service();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+	
+    ByteBuffer receive() throws IOException {
+        for (; ; ) {
+            int read = channelIO.read();
+            ByteBuffer bb = channelIO.getReadBuf();
+            if ((read < 0) || (Request.isComplete(bb))) {
+                bb.flip();
+                return bb;
+            }
+        }
+    }
+
+    Reply build(Request rq) throws IOException {
+
+        Reply rp = null;
+        Request.Action action = rq.action();
+        if ((action != Request.Action.GET)) {
+            rp = new Reply(Reply.Code.METHOD_NOT_ALLOWED,
+                    new StringContent(rq.toString()));
+            rp.prepare();
+            return rp;
+        }
+        rp = new Reply(Reply.Code.OK,
+                new StringContent("hello world"));
+        rp.prepare();
+        return rp;
+    }
+}
+```
 
 ## NIO简介
 
-上面模型也被称为BIO模型，也就是Blocking Input/Output, 那让我们分析一下阻塞在哪里
+上面模型也被称为BIO模型，也就是Blocking Input/Output, 其实上面已经分析出来在哪里了，也就是读数据的时候未必可以读，但是我们的read调用就被阻塞在那里，我们自然能够想到能否让操作系统为我们提供一个非阻塞的read函数, 这个 read 函数的效果是，如果没有数据到达时（到达网卡并拷贝到了内核缓冲区），立刻返回一个错误值（-1），而不是阻塞地等待。操作系统提供了这样的功能，只需要在调用 read 前，将文件描述符设置为非阻塞即可。这样我们在线程里面调用read函数，直到返回值不为-1的，再开始处理业务。 但是在数据到达内核缓冲区，这个阶段仍然是阻塞的，需要等待数据从内核缓冲区拷贝到用户缓冲区，才能返回。
 
+这里可以为每个连接准备一个线程来处理，这其实也是解决问题的方案，一些连接请求不多的HTTP服务器现在还是这么处理的，那么对于连接过多的，多线程就有些乏力了，当然也可以有聪明的方法，我们可以每accept一个连接之后，将这个文件描述符(可以理解为Socket的引用)放在一个数组里面，然后弄一个新的线程去不断遍历这个数组，调用每一个元素的非阻塞 read 方法，这样，我们就成功用一个线程处理了多个客户端连接。
 
+这看起来就有多路复用的意思了，但这和我们用多线程去将阻塞 IO 改造成看起来是非阻塞 IO 一样，这种遍历方式也只是我们用户自己想出的小把戏，每次遍历遇到 read 返回 -1 时仍然是一次浪费资源的系统调用。所以，还是得恳请操作系统老大，提供给我们一个有这样效果的函数，我们将一批文件描述符通过一次系统调用传给内核，由内核层去遍历，才能真正解决这个问题。
 
+select 是操作系统提供的系统调用函数，通过它，我们可以把一个文件描述符的数组发给操作系统， 让操作系统去遍历，确定哪个文件描述符可以读写， 然后告诉我们去处理。
 
+但是这个函数仍然不完美，原因在于: 
 
-## 改造
+1. select 调用需要传入 fd 数组，需要拷贝一份到内核，高并发场景下这样的拷贝消耗的资源是惊人的。（可优化为不复制）
 
+2. select 在内核层仍然是通过遍历的方式检查文件描述符的就绪状态，是个同步过程，只不过无系统调用切换上下文的开销。（内核层可优化为异步事件通知）
+3. select 仅仅返回可读文件描述符的个数，具体哪个可读还是要用户自己遍历。（可优化为只返回给用户就绪的文件描述符，无需用户做无效的遍历）
 
+但也不是不能用，但select还有限制，这个限制就是select 只能监听 1024 个文件描述符的限制，后面的poll去掉了这个限制。最终解决select函数的大boss叫epoll，针对select函数的三个不完美的点进行了修复:
 
+1. 内核中保存一份文件描述符集合，无需用户每次都重新传入，只需告诉内核修改(添加、修改、监控的文件描述符)的部分即可。
+2.  内核不再通过轮询的方式找到就绪的文件描述符，而是通过异步 IO 事件唤醒。
+3. 内核仅会将有 IO 事件的文件描述符返回给用户，用户也无需遍历整个文件描述符集合。
 
+## NIO的写法
 
-## Reactor模式
+在NIO的写法就变成了事件分发，也就是说哪个事件就绪分发给对应的处理者，读事件就绪分发给读事件的处理者，连接就绪分发给连接就绪的处理者, 所以我们需要一个Dispatcher:
+
+```java
+public interface DispatcherN extends Runnable{
+    void register(SelectableChannel ch, int ops, Handler h)
+            throws IOException;
+}
+```
+
+基于NIO来写，
+
+Linux 的Epoll函数实现了在内核保存一份文件描述集合，无需用户每次重新传入，我们只需要告诉内核添加监控的文件描述符即可，Jav
 
 
 
@@ -207,3 +725,5 @@ ByteBuffer是个容器，
 [15] TCP学习笔记(二) 相识篇  https://juejin.cn/post/7103092974841511950#heading-2 
 
 [16] TCP-4-times-close https://wiki.wireshark.org/TCP-4-times-close.md
+
+[18]   What does "connection reset by peer" mean?  https://stackoverflow.com/questions/1434451/what-does-connection-reset-by-peer-mean
