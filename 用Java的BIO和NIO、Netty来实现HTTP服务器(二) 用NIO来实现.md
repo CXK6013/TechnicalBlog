@@ -2,6 +2,8 @@
 
 > 翻了一下(一)发现整体还是不大好, 这里重新再梳理一下
 
+[TOC]
+
 ## 前言
 
 这是一个系列的文章，按照规划是用Java标准库、Netty来实现一个非常简单的HTTP服务器，HTTP服务器我们可以使用Java标准库提供的api，实现BIO、NIO模型的HTTP服务器，然后再用Netty实现，前一篇我们写的类在这一篇还可以用到，让我们回忆一下上一篇我们讲了什么，我们回顾了通信的发展史，从最开始的点对点链路，到总线链路，再到mac地址，ip地址，最后引出两台计算机之间的通信事实上是两台计算机上面进程之间的通信，那么该数据包到达计算机之后该如何交给哪个进程呢，这也就是端口，运输层引入了端口的概念，ip+端口构成TCP连接的一端，那么要通信就首先要建立连接，也就是三次握手，连接建立之后就可以通过连接来传输数据了，那么该如何管理连接呢?  操作系统在连接建立的时候，会将这个消息通知给进程。
@@ -664,23 +666,46 @@ select 是操作系统提供的系统调用函数，通过它，我们可以把�
 但也不是不能用，但select还有限制，这个限制就是select 只能监听 1024 个文件描述符的限制，后面的poll去掉了这个限制。最终解决select函数的大boss叫epoll，针对select函数的三个不完美的点进行了修复:
 
 1. 内核中保存一份文件描述符集合，无需用户每次都重新传入，只需告诉内核修改(添加、修改、监控的文件描述符)的部分即可。
-2.  内核不再通过轮询的方式找到就绪的文件描述符，而是通过异步 IO 事件唤醒。
+2. 内核不再通过轮询的方式找到就绪的文件描述符，而是通过异步 IO 事件唤醒。
 3. 内核仅会将有 IO 事件的文件描述符返回给用户，用户也无需遍历整个文件描述符集合。
 
-## NIO的写法
+## 重回NIO
 
-在NIO的写法就变成了事件分发，也就是说哪个事件就绪分发给对应的处理者，读事件就绪分发给读事件的处理者，连接就绪分发给连接就绪的处理者, 所以我们需要一个Dispatcher:
+“内核仅会将有IO事件的文件描述符返回给用户”，仔细读这一句话，我以为是select函数的返回值是一个集合，但是我去看了一下这个函数:
 
-```java
-public interface DispatcherN extends Runnable{
-    void register(SelectableChannel ch, int ops, Handler h)
-            throws IOException;
-}
+```c
+int select(int maxfd, fd_set *readfds, fd_set *writefds,fd_set *exceptfds, struct timeval *timeout);
 ```
 
-基于NIO来写，
+fd是一个集合类型，从参数名字上我们来推断readfds传入需要监视读事件的文件描述符，writefds是需要监视读事件的文件描述符，exceptfds是异常事件的文件描述符，这里我们提到了文件描述符，这个文件描述符是用来代表一个打开的文件、或者socket、或者其他数据源。定义了能对该文件做的操作。当select函数有所返回的时候，会修改传入的集合。select函数是系统调用，Java层面对应的抽象也就是Selector，使用起来倒是简单:
 
-Linux 的Epoll函数实现了在内核保存一份文件描述集合，无需用户每次重新传入，我们只需要告诉内核添加监控的文件描述符即可，Jav
+```java
+Selector selector = Selector.open();
+selector.select();
+```
+
+默认选择当前操作系统的实现，我们看下Open的实现，我的电脑装的操作系统是Windows，select的实现在Oracle 的hotspot VM中是闭源的，观察他的实现要在OpenJDK上，我这里随手选了一个JDK 11版本的实现:
+
+![](https://a.a2k6.com/gerald/i/2023/12/23/4rhl.jpg)
+
+​	![](https://a.a2k6.com/gerald/i/2023/12/23/19mubx.jpg)
+
+那怎么让这个选择器知道我对某个事件感兴趣 , 读事件就绪、写事件就绪其实通道(通道也就是对连接的抽象)上发生的事件，按照我之前的想法Selector这个类里面应该会有一个register之类的方法，但是没找到，不在Selector就在ServerSocketChannel里面，果然我在ServerSocketChannel找到了register方法, 这个register来自AbstractSelectableChannel。
+
+```java
+// ops是一个枚举值,att是对应的事件触发之后,交付给哪个对象处理
+public final SelectionKey register(Selector sel, int ops, Object att)
+```
+
+所以我们可以写成下面这样:
+
+
+
+## NIO的实现
+
+
+
+
 
 
 
@@ -727,3 +752,5 @@ Linux 的Epoll函数实现了在内核保存一份文件描述集合，无需用
 [16] TCP-4-times-close https://wiki.wireshark.org/TCP-4-times-close.md
 
 [18]   What does "connection reset by peer" mean?  https://stackoverflow.com/questions/1434451/what-does-connection-reset-by-peer-mean
+
+[19] linux select函数解析以及事例 https://zhuanlan.zhihu.com/p/57518857
