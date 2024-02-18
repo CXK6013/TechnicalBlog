@@ -110,7 +110,46 @@ private final class NioMessageUnsafe extends AbstractNioUnsafe {
 }
 ```
 
-而这个方法则是被NioEventLoop的run方法所调用，这个方法的主体逻辑是一个无限循环，这也许就是NioEventLoop由来，事件循环组。这个run方法在什么时候被启动呢，我们还是按着ctrl去找调用方，然后来到SingleThreadEventExecutor的doStartThread方法，SingleThreadEventExecutor是一个抽象类，NioEventLoop是它的子类，在SingleThreadEventExecutor的doStartThread方法中的逻辑如下:
+回想HttpHelloWorldServerHandler，这个类继承了SimpleChannelInboundHandler，我们重写了channelRead0方法，在里面解析HTTP请求报文，并回写HTTP响应。在SimpleChannelInboundHandler里面channelRead0又被SimpleChannelInboundHandler的channelRead方法所调用，这也就跟上面代码块的，语句一中的  pipeline.fireChannelRead和我们重写的channelReadComplete对应上了，fireExceptionCaught和我们重写的exceptionCaught对应上了。
+
+```java
+public void channelRead0(ChannelHandlerContext ctx, HttpObject msg) {
+    System.out.println("数据被完全处理");
+    if (msg instanceof HttpRequest) {
+        HttpRequest req = (HttpRequest) msg;
+        boolean keepAlive = HttpUtil.isKeepAlive(req);
+        FullHttpResponse response = new DefaultFullHttpResponse(req.protocolVersion(), OK,
+                Unpooled.wrappedBuffer(CONTENT));
+        response.headers()
+                .set(CONTENT_TYPE, TEXT_PLAIN)
+                .setInt(CONTENT_LENGTH, response.content().readableBytes());
+        if (keepAlive) {
+             if (!req.protocolVersion().isKeepAliveDefault()) {
+                response.headers().set(CONNECTION, KEEP_ALIVE);
+            }
+        } else {
+            // Tell the client we're going to close the connection.
+            response.headers().set(CONNECTION, CLOSE);
+        }
+        ChannelFuture f = ctx.write(response).addListener(e->{
+            System.out.println("hello world");
+        });
+        if (!keepAlive) {
+            f.addListener(ChannelFutureListener.CLOSE);
+        }
+    }
+}
+```
+
+### 总结一下
+
+我们总结一下我们看源码的收获，还是以JDK中最基础的API为核心，Netty帮我们做了封装，将处理网络链接，读写消息变成了一个又一个的事件, 一个又一个方法，我们可以重写这些方法，对应事件触发之后会回调我们的方法。 从最基础的ServerSocketChannel的accept方法，Netty里面使用SocketUtils的accept方法，将JDK的SocketChannel变成Netty自己的SocketChannel，而SocketUtils的accept方法的调用方又只有一处，也就是NioServerSocketChannel的doReadMessages，doReadMessages方法会将拿到的SocketChannel实例放到传入的List里面，而doReadMessages方法则又被NioMessageUnsafe的read方法所调用，在这个方法里面我们看到了pipeline.fireChannelRead、pipeline.fireChannelReadComplete()、pipeline.fireExceptionCaught。而NioMessageUnsafe的read方法又被NioEventLoop的processSelectedKey所调用，NioEventLoop的processSelectedKey又有两处调用: processSelectedKeysOptimized、processSelectedKeysPlain，这两个方法又只有一处调用也就是NioEventLoop的processSelectedKeys，NioEventLoop的processSelectedKeys又直接被NioEventLoop的run方法直接调用，run方法里面是一个无限循环。
+
+![](https://s1.wzznft.com/i/2024/02/17/h9st9s.jpg)
+
+## 接着捋一捋Netty的启动流程
+
+而NioMessageUnsafe的read方法则是被NioEventLoop的run方法所调用，这个方法的主体逻辑是一个无限循环，这也许就是NioEventLoop由来，事件循环组。这个run方法在什么时候被启动呢，我们还是按着ctrl去找调用方，然后来到SingleThreadEventExecutor的doStartThread方法，SingleThreadEventExecutor是一个抽象类，NioEventLoop是它的子类，在SingleThreadEventExecutor的doStartThread方法中的逻辑如下:
 
 ![](https://a.a2k6.com/gerald/i/2024/01/22/5m2sa.png)
 
@@ -118,7 +157,7 @@ private final class NioMessageUnsafe extends AbstractNioUnsafe {
 
 ![](https://a.a2k6.com/gerald/i/2024/01/31/uv4b.png)
 
-  调用链是从AbstractBootstrap的bind方法，到AbstractBootstrap的doBind方法，看到了这里想到了什么呢？ 我们们把启动代码再拎出来看一下：
+  调用链是从AbstractBootstrap的bind方法，到AbstractBootstrap的doBind方法，看到了这里想到了什么呢？ 我们们再把启动代码再拎出来看一下：
 
 ```java
 public class HttpHelloWorldServer {
@@ -205,10 +244,18 @@ public ChannelPromise sync() throws InterruptedException {
 DefaultChannelPromise继承DefaultPromise，在DefaultPromise的sync实现是:
 
 ```java
+private volatile Object result; // 语句一
+
 public Promise<V> sync() throws InterruptedException {
-    await();
+    await(); 
     rethrowIfFailed();
     return this;
+}
+public boolean isDone() {
+  return isDone0(result);
+}
+private static boolean isDone0(Object result) {
+  return result != null && result != UNCANCELLABLE;
 }
 public Promise<V> await() throws InterruptedException {
         if (isDone()) {
@@ -219,12 +266,13 @@ public Promise<V> await() throws InterruptedException {
         }
         checkDeadLock();
         synchronized (this) {
+            // 语句二
             while (!isDone()) {
                 incWaiters();
                 try {
-                    wait();
+                    wait(); // 语句三
                 } finally {
-                    decWaiters();
+                    decWaiters(); // 语句四
                 }
             }
         }
@@ -232,9 +280,38 @@ public Promise<V> await() throws InterruptedException {
 }
 ```
 
+我打断点在语句三，照我的想法，应该卡在这里不动，毕竟调用了wait方法之后, 线程的处于WAITING状态，应该等待其他线程唤醒才能接下去执行，也就是调用notify或者notifyAll方法，但是main线程在执行到语句三之后，没有阻塞在这里，而是接着往下执行，执行到了语句四，那就说明main线程处于WAITING状态没多久就被唤醒了，但究竟是在哪里唤醒的呢，我们翻一翻DefaultPromise，在checkNotifyWaiters找到了notifyAll方法:
 
+```java
+private synchronized boolean checkNotifyWaiters() {
+    if (waiters > 0) {
+        notifyAll();
+    }
+    return listener != null || listeners != null;
+}
+```
 
-## 理解启动流程
+我们在这个方法上打上断点，看一下这个方法被谁调用:
+
+![](https://a.a2k6.com/gerald/i/2024/02/16/4dyk.jpg)
+
+### 浅浅总结一下
+
+我们启动类里面的ServerBootstrap在bind的时候事实上调用的是ServerBootstrap父类的AbstractBootstrap的bind方法，然后接着调用AbstractBootstrap的doBind方法，然后doBind方法调用initAndRegister方法，最后调用到MultithreadEventLoopGroup的register方法，然后走到SingleThreadEventLoop的register方法，接着走到AbstractUnsafe的register方法上，然后走到SingleThreadEventExecutor的execute方法上，接着走到了SingleThreadEventExecutor的startThread方法上，整个事件循环组就开起来了。
+
+```java
+ Channel ch = b.bind(PORT).sync().channel(); 
+```
+
+ bind返回的是一个DefaultChannelPromise对象，调用sync方法会让执行这段代码的线程进入WAITING状态，进入WAITING状态是为了等待其他线程初始化任务完成，粗略的说也就是将事件循环组跑起来，跑起来之后会调用DefaultChannelPromise的trySuccess方法，来唤醒进入WAITING状态的线程(要求是一把锁上的wait和notify哦)。
+
+```
+ ch.closeFuture().sync();
+```
+
+最后拿到的Channel事实上是NioServerSocketChannel，调用closeFuture方法拿到的是AbstractChannel的CloseFuture实例，CloseFuture继承DefaultChannelPromise类，所以调用sync方法还是让主线程在这里进入WAITING状态，毕竟是一个HTTP服务器需要不断的回应请求，如果没有这一行最后就会走到finally里面的代码，我们开启的事件循环组会被关闭。
+
+## 再理解启动流程
 
 首先让我们再拎出来用《Java的BIO和NIO、Netty来实现HTTP服务器(三)》的HttpHelloWorldServer:
 
@@ -269,12 +346,17 @@ public class HttpHelloWorldServer {
 
 语句一和语句二我们声明了两个EventLoopGroup，可以当做线程池来使用，EventLoopGroup实现了ScheduledExecutorService，NioEventLoopGroup是一个多线程的事件循环，用于处理I/O操作(连接建立，读写数据)，语句一我们声明了一个叫bossGroup的EventLoopGroup对象，bossGroup负责接受进来的连接，语句二我们声明了一个叫workerGroup的EventLoopGroup对象，一旦bossGroup接受到了连接就会接受的连接注册给workerGroup，之后就是workerGroup负责处理该连接的流量，我们可以通过EventLoopGroup的构造函数来指定线程数量。
 
-语句四我们声明了一个ServerBootstrap，这个类辅助我们设置一些参数，语句四的我们声明了SO_BACKLOG的数量，三次握手之后，连接会进入到一个队列里面，应用程序调用accept之后，连接从队列里面移除，这个参数指定队列里面最多能够承受多少TCP连接。
+语句四我们声明了一个ServerBootstrap，这个类辅助我们设置一些参数，语句四的我们声明了SO_BACKLOG的数量，三次握手之后，连接会进入到一个队列里面，应用程序调用accept之后，连接从队列里面移除，这个参数指定队列里面最多能够承受多少TCP连接。语句五里面我们组合bossGroup，workerGroup，ServerBootstrap中NioServerSocketChannel的作用是表示当新连接建立之后，我们用NioServerSocketChannel这个来表示，NioServerSocketChannel用于TCP协议，NioDatagramChannel用于UDP协议。
 
-语句五里面我们组合bossGroup，workerGroup，ServerBootstrap中NioServerSocketChannel的作用是表示当新连接建立之后，我们用NioServerSocketChannel这个来表示，NioServerSocketChannel用于TCP协议，NioDatagramChannel用于UDP协议。我们还在语句五中声明了childHandler，也就是HttpHelloWorldServerInitializer，每次连接建立之后都会被触发，我在HttpHelloWorldServerInitializer加了一行输出代码:
+##  理解流水线的触发逻辑
+
+### 为什么handlerAdded方法被触发了两次?
+
+我们还在语句五中声明了childHandler，也就是HttpHelloWorldServerInitializer，每次连接建立之后都会被触发，我在HttpHelloWorldServerInitializer加了一行输出代码:
 
 ```java
-public class HttpHelloWorldServerInitializer extends ChannelInitializer<SocketChannel> {
+public class HttpHelloWorldServerInitializer extends 
+    <SocketChannel> {
     @Override
     public void initChannel(SocketChannel ch) {
         ChannelPipeline p = ch.pipeline();
@@ -287,7 +369,7 @@ public class HttpHelloWorldServerInitializer extends ChannelInitializer<SocketCh
 }
 ```
 
-发现控制台输出了两次"被触发一次"，这让我比较好奇initChannel的调用逻辑，initChannel来自ChannelInitializer，在ChannelInitializer中调用方有两处
+发现控制台输出了两次"被触发一次"，这让我比较好奇initChannel的调用逻辑，initChannel来自ChannelInitializer，在ChannelInitializer中调用方有两处，一处是channelRegistered，一处是handlerAdded，所以输出两次也不是不能说的通，
 
 ```java
 private boolean initChannel(ChannelHandlerContext ctx) throws Exception {
@@ -295,8 +377,6 @@ private boolean initChannel(ChannelHandlerContext ctx) throws Exception {
         try {
             initChannel((C) ctx.channel());
         } catch (Throwable cause) {
-            // Explicitly call exceptionCaught(...) as we removed the handler before calling initChannel(...).
-            // We do so to prevent multiple calls to initChannel(...).
             exceptionCaught(ctx, cause);
         } finally {
             if (!ctx.isRemoved()) {
@@ -330,19 +410,17 @@ public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
 }
 ```
 
-《用Java的BIO和NIO、Netty来实现HTTP服务器(三)》我们提到了handlerAdded方法，这个方法是添加一个处理器触发一次，我们重写一下这个方法看一下输出结果:
+在《用Java的BIO和NIO、Netty来实现HTTP服务器(三)》我们提到了handlerAdded方法，这个方法是添加一个处理器触发一次，我们重写一下这个方法看一下输出结果:
 
 ```java
 public class HttpHelloWorldServerInitializer extends ChannelInitializer<SocketChannel> {
-    
-    private static final AtomicInteger HANDLER_ADDED = new AtomicInteger(1);
-    
-    private static final AtomicInteger INIT_CHANNEL = new AtomicInteger(1);
-	
+
+    private static final AtomicInteger ORDER = new AtomicInteger(1);
+
     @Override
     public void initChannel(SocketChannel ch) {
+        System.out.println(Thread.currentThread().getName()+ " initChannel:" + ORDER.incrementAndGet());
         ChannelPipeline p = ch.pipeline();
-        System.out.println(Thread.currentThread().getId()+ "initChannel:" + INIT_CHANNEL.getAndIncrement());
         p.addLast(new HttpServerCodec());
         p.addLast(new HttpContentCompressor((CompressionOptions[]) null));
         p.addLast(new HttpServerExpectContinueHandler());
@@ -351,43 +429,124 @@ public class HttpHelloWorldServerInitializer extends ChannelInitializer<SocketCh
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
-        System.out.println(Thread.currentThread().getId() + "" + "handlerAdded:" + HANDLER_ADDED.getAndIncrement());
+        System.out.println("ip address port"+ ctx.channel().remoteAddress());
+        System.out.println(Thread.currentThread().getName() + " Channel ID: " + ctx.channel().id() + " handlerAdded:" + ORDER.incrementAndGet());
         super.handlerAdded(ctx);
     }
 }
 ```
 
-## 盘一盘流水线
+为什么上面用原子类呢，只是我随手写的，但是却意外的试出来发现打印出来的线程名称是不一样的，输出结果为:
 
-再盘一盘这个流水线，在《Java的BIO和NIO、Netty来实现HTTP服务器(三)》里面我们已经和
+```java
+nioEventLoopGroup-3-1   handlerAdded:2
+nioEventLoopGroup-3-1 initChannel:3
+nioEventLoopGroup-3-2   handlerAdded:4
+nioEventLoopGroup-3-2 initChannel:5
+```
 
+奇怪这个handlerAdded 为什么会被调用两次呢?   打了一下断点发现调用链是一样的： 
 
+![](https://a.a2k6.com/gerald/i/2024/02/17/v01d.jpg)
 
+![](https://a.a2k6.com/gerald/i/2024/02/17/vcpx.jpg)
 
+并且channel的ID都是不一样的，所以是不同的TCP连接，但是这是为什么，我猜想是为了兼容HTTP 1.0, 在HTTP 1.0每次HTTP请求都对应一个TCP连接请求，为了提高速度，客户端可能会为同一个请求打开一个新的连接，然后关闭它，再打开另一个新的连接用于后续的请求。这通常发生在客户端和服务器之间的 keep-alive 选项不匹配时。我猜想到这个之后感到很兴奋，但是我该怎么验证我的猜想呢，如果是按照我的猜想来说，那么假设第一次输出的channelId是1,2，那么第二次输出的应该是2,3，也就是第二次请求复用第一次的预先创建的TCP连接，但是观察控制台发现，我在chrome、postman浏览器里面发起HTTP请求，控制台输出的channelId都是不同的。但是放到火狐浏览器下面handlerAdded就只触发了一次，更深层次的原因我们放在后面考究吧，目前也就是说，当前处理器被添加的时候会触发handlerAdded一次。
 
-## 水位
+下午跑完步回来跟别人讨论了一下，看了一下浏览器的network:
 
+![](https://a.a2k6.com/gerald/i/2024/02/17/1x0.jpg)
 
+所以原因就是浏览器会多余请求一次favicon一次，才导致handlerAdd会被触发两次，那么为什么火狐只触发了一次呢，原因在于火狐浏览器会在首次请求的时候默认对favicon进行缓存，那Postman为什么会请求两次呢，原因是Postman的bug，见参考链接[1]。
 
+### 理解流水线
 
+启动流程我们梳理了一遍，现在也就剩ChannelInitializer、ChannelPipeline、SimpleChannelInboundHandler没有仔细的瞧上一瞧了，我们通过ChannelPipeline来添加处理器，我们添加了HttpServerCodec、HttpContentCompressor、HttpServerExpectContinueHandler、HttpHelloWorldServerHandler，这些处理器会被依次触发。
 
-## 再次理解处理消息的逻辑
+![](https://a.a2k6.com/gerald/i/2024/02/17/6h3zi.jpg)
 
+我们这里以HttpServerCodec为例大致讲解一下处理器的运作流程，我们照例还是审视一下HttpServerCodec:
 
+```java
+public final class HttpServerCodec extends CombinedChannelDuplexHandler<HttpRequestDecoder, HttpResponseEncoder>
+```
 
+里面有两个内部类HttpServerRequestDecoder、HttpServerResponseEncoder，从名字上我们可以推断出来一个是解析HTTP请求，一个将响应编码成HTTP响应。我们在HttpServerRequestDecoder上打上断点观察一下调用链:
 
+![](https://a.a2k6.com/gerald/i/2024/02/17/4tna.jpg)
 
+ 也就是从AbstractChannelHandlerContext的invokeChannelRead触发，走到CombinedChannelDuplexHandler的channelRead方法，然后是ByteToMessageDecoder的channelRead方法，在ByteToMessageDecoder的channelRead方法中调用callDecode方法，最终调用到decodeRemovalReentryProtection方法，然后调用HttpServerRequestDecoder的decode方法。这些都是我们打断点调试得出的结论，那么对于DefaultChannelPipeline来说，想再了解的更详细一点该怎么做呢，答案是看ChannelPipeline的注释，我之前翻的是DefaultChannelPipeline的注释，但是没翻到，后面无意间就翻到了ChannelPipeline上有比较详尽的注释，所以启示我们如果在当前类里面找不到注释，我们不妨就去找他的父类上去找找。
 
+![](https://a.a2k6.com/gerald/i/2024/02/17/y0wm.jpg)
+
+ 这个注释还是比较详细的，这里我就不贴原文了，直接放我的理解了，有兴致的同学可以自己去翻注释去看一下。
+
+每个Channel都有自己的Pipeline，一个Channel被创建的时候Pipeline 被自动创建。Pipeline如何处理I/O事件呢：
+
+![](https://a.a2k6.com/gerald/i/2024/02/17/6q3kx.jpg)
+
+   也就是说读到数据之后会经过一系列InBoundHandler，我们可以通过ChannelHandlerContext来将事件传播给最近的InBoundHandler，而ChannelHandlerContext的write方法经历过一系列OutBoundHandler来传播，最后到达Socket的Write方法。让我们假设有下面的处理器链:
+
+```java
+ ChannelPipeline p = ...;
+ p.addLast("1", new InboundHandlerA());
+ p.addLast("2", new InboundHandlerB());
+ p.addLast("3", new OutboundHandlerA());
+ p.addLast("4", new OutboundHandlerB());
+ p.addLast("5", new InboundOutboundHandlerX());
+```
+
+Inbound开头的代表是入站程序，以Outbound开头的代表是出站程序，所为入站也就是读取数据经过的链路，出站也就是回写数据经过的链路。ChannelPipeline会根据处理器类型和事件类型来决定是否要经过这个处理器，处理器3和4没有实现ChannelInboundHandler，所以读取到数据之后，不会经过这两个处理器，读取数据事实上只会经过1、2、5。对于出站事件，也就是回写数据事件，由于1,2没有实现ChannelOutboundHandler，所以回写数据的时候不会经过1,2，只会经过3、4、5。在回写数据的时候是反向的，因为出站事件通常涉及到从应用程序向网络发送数据，所以数据会先通过最后添加的处理器。我们假定InboundOutboundHandlerX同时实现了ChannelInboundHandler和ChannelOutboundHandler，那么该处理器就能同时处理入站(read)和出站事件(write):
+
+- 对于入站事件，处理器5会在最后被调用，因此入站事件的处理顺序将是1、2、5。
+- 对于出站事件，处理器5会被最先调用，因此出站事件的处理顺序将是5、4、3。
+
+如图所示，处理程序必须调用 ChannelHandlerContext 中的事件传播方法才能将事件转发给下一个处理程序。这些方法包括
+入站事件的传播方法
+
+- ChannelHandlerContext.fireChannelRegistered()
+- ChannelHandlerContext.fireChannelActive()
+- ChannelHandlerContext.fireChannelRead(Object)
+- ChannelHandlerContext.fireChannelReadComplete()
+- ChannelHandlerContext.fireExceptionCaught(Throwable)
+- ChannelHandlerContext.fireUserEventTriggered(Object)
+- ChannelHandlerContext.fireChannelWritabilityChanged()
+- ChannelHandlerContext.fireChannelInactive()
+- ChannelHandlerContext.fireChannelUnregistered()
+
+ 出站事件的传播方法
+
+- ChannelHandlerContext.bind(SocketAddress, ChannelPromise)
+- ChannelHandlerContext.connect(SocketAddress, SocketAddress, ChannelPromise)
+- ChannelHandlerContext.write(Object, ChannelPromise)
+- ChannelHandlerContext.flush()
+- ChannelHandlerContext.read()
+- ChannelHandlerContext.disconnect(ChannelPromise)
+- ChannelHandlerContext.close(ChannelPromise)
+- ChannelHandlerContext.deregister(ChannelPromise)
+
+所谓传播也就是调用下一个处理器中对应的方法，关于出站事件我比较好奇，出站事件不是和写数据有关嘛，为什么里面会有bind、connect、read这三个方法
 
 ## 盘一盘京东云这个问题所在
 
 
 
+### ZGC的触发机制
 
 
 
+### 分析问题所在
+
+
+
+
+
+## 总结一下
+
+该如何学Netty，
 
 
 
 ##  参考资料
 
+[1]  Client connects twice when using Postman to send requests? https://stackoverflow.com/questions/71088167/client-connects-twice-when-using-postman-to-send-requests
