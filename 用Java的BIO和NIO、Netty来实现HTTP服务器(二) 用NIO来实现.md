@@ -525,9 +525,63 @@ Inbound开头的代表是入站程序，以Outbound开头的代表是出站程�
 - ChannelHandlerContext.close(ChannelPromise)
 - ChannelHandlerContext.deregister(ChannelPromise)
 
-所谓传播也就是调用下一个处理器中对应的方法，关于出站事件我比较好奇，出站事件不是和写数据有关嘛，为什么里面会有bind、connect、read这三个方法
+所谓传播也就是调用下一个处理器中对应的方法，关于出站事件我比较好奇，出站事件不是和写数据有关嘛，为什么里面会有bind、connect、read这三个方法，于我的直觉相违背，然后我发现有人跟我一样抱有同样的疑问, 有人在StackOverFlow上问:  In Netty4,why read and write both in OutboundHandler。Netty的作者的回复是:
+
+> Inbound handlers are supposed to handle inbound events. Events are triggered by external stimuli such as data received from a socket.
+>
+> 入站处理器由入站事件触发。事件由外部触发比如从Socket中接收到数据。
+>
+> Outbound handlers are supposed to intercept the operations issued by your application.
+>
+> 出站应用程序应当拦截
+>
+> Re: Q1) `read()` is an operation you can issue to tell Netty to continue reading the inbound data from the socket, and that's why it's in an outbound handler.
+>
+> read是一个可以让发出的操作，用于告诉Netty继续从Socket中读取入站数据，这也就是它被放在入站处理器的原因。
+>
+> Re: Q2) You don't usually issue a `read()` operation because Netty does that for you automatically if `autoRead` property is set to `true`. Typical flow when `autoRead` is on:
+>
+> 如果autoRead属性被设置为true，Netty通常情况下会自动执行读取操作。自动读取打开时的一般流程为:
+>
+> 1. Netty triggers an inbound event `channelActive` when socket is connected, and then issues a `read()` request to itself (see `DefaultChannelPipeline.fireChannelActive()`)
+>
+>    当Socket被连接上，Netty触发入站事件ChannelActive，然后发起read请求，参看DefaultChannelPipeline的fireChannelActive。
+>
+> 2. Netty reads something from the socket in response to the `read()` request.
+>
+> ​    Netty响应这个请求从Socket中读取响应。
+>
+> 3. If something was read, Netty triggers `channelRead()`.
+>
+>    如果有内容被读取，Netty触发channelRead。
+>
+> 4. If there's nothing left to read, Netty triggers `channelReadComplete()`
+>
+>    如果读取完毕，会触发channelReadComplete
+>
+> 5. Netty issues another `read()` request to continue reading from the socket.
+>
+> ​    Netty发起另一个read请求，继续从Socket中读取。
+>
+> If `autoRead` is off, you have to issue a `read()` request manually. It's sometimes useful to turn `autoRead` off. For example, you might want to implement a backpressure mechanism by keeping the received data in the kernel space
+>
+> 如果自动读取关闭，你必须手动的发起读取。有的时候关闭自动读取是有用的，例如，你可能想要实现背压将接收到的数据保存在内核里面。
+
+这段话我们分成三段解读，第一段解释了Inbound Handler和Outbound Handler的设计意图，被触发被Inbound Handler来处理，被程序主动触发由Outbound Handler来处理，这样一说其实好像也能说的通，但是这里我的想法是为什么出站操作这里要放read方法，这看起来很割裂，在我看来入站和出站应当根据数据的流向来定义，读取是流入，出站是写出，Netty的这个设计在我看来有些不符合直觉。
+
+第二段我们聊一聊autoRead
+
+
+
+第三段我们聊背压的实现，其实背压我们在前面的文章已经聊到过了。
+
+
+
+接下来我们通过京东云的一篇文章来分析背压的必要性实现，
 
 ## 盘一盘京东云这个问题所在
+
+
 
 
 
