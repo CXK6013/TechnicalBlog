@@ -123,49 +123,97 @@ public final void acquireShared(int arg) 0{
 }
 ```
 
-这两个方法都有无限循环，所以也是有大量线程在不断使用CPU。
-
-###  例子3:  GC 导致CPU高占用
-
-上面的例子都是大量线程在不断使用CPU，粗略的说，发生GC动作的时候要STW，这个时候就算是只有聊聊几个线程也可以让CPU飙高，在搜索引擎上搜索FullGC  CPU，这样的分析文章并不少见:
-
-![](https://a.a2k6.com/gerald/i/2024/01/13/50b5f.jpg)
-
-
+这两个方法都有无限循环，所以也是有大量线程在不断使用CPU。到这里其实答案已经出来了，CPU飙高就是CPU在不断的执行任务，什么是对齐颗粒度，就是颗粒度对齐。
 
 ## 那么如何定位问题?
 
+这里我们介绍一些工具，通过这些工具来定位究竟是哪一行代码出现了问题，这里我们主要介绍Java Flight Record 、Java Mission Control，Java Flight Record来自Oracle，暗含的意思是JVM的黑盒子，记录运行中JVM的问题，且对性能影响非常小，官方宣称在百分之一左右，可以伴随应用启动而启动，在JDK8u40之后可以在运行时灵活的开启关闭。Java Flight  Record 产生记录，而Java Mission Control则用来分析JFR产生的记录，再简单介绍一下async-profiler，async-profiler是针对JVM的采样分析工具，不受Safepoint Bias影响，性能开销低(采样频率可以调整)，生产可用，可基于Java Agent启动，或指定PID连接已有JVM，支持多种输出格式(HTML、SVG、JFR等)及格式转换。在IDEA的mac 、Linux版本默认集成，Windows上的是IntelliJ Profile，也就是说async-profiler不支持Windows，但不影响async-profiler的优秀: 
 
+![](https://a.a2k6.com/gerald/i/2024/01/28/htd0.jpg)
 
-### 有请Java Flight Record 
+JFR支持全部的操作系统，我们还是先介绍JFR。
 
-首先介绍Java Flight Record，中文名为飞行记录，暗含的意思是可以伴随Java应用启动，是 JVM 内置的基于事件的JDK监控记录框架。那为啥不先介绍jsstack呢，原因在于当你的服务器CPU告警的时候，可能已经影响用户使用了，为了不影响用户的使用，一种有效的选择是先停掉这个应用，再重新启动，导致现场信息丢失。另一种情况是复现条件比较复杂，而Java Flight Record是一直在记录的，可以获取现场信息。而且对性能的影响非常小。
+### JFR简介
 
-#### 先介绍JDK 8中怎么用
+#### 应用启动时启动
 
+首先我们写一个持续占用CPU的代码，像下面这样:
 
+```java
+@GetMapping("/test")
+public  void test(){
+    ExecutorService pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+    for (int i = 0; i < 16; i++) {
+        pool.execute(()->{
+            randomNumber();
+        });
+    }
+}
+public void randomNumber() {
+    Random random = new Random(100);
+    while (true){
+        random.nextInt();
+    }
+}
+```
 
+在IDEA中的vm options中加上下面的参数:
 
+```java
+-XX:+UnlockCommercialFeatures -XX:StartFlightRecording=filename=flight.jfr,dumponexit=true,delay=3s,size=1024m,maxage=30d
+```
 
-#### 然后是JDK 11
+- -XX:+UnlockCommercialFeatures  8需要这个参数, 解锁商业许可, 在现在不需要收费了，oracle将JFR和JMC都捐献给了OpenJDK，这个参数只在JDK8需要，在11和17 不需要此参数
+- -XX:StartFlightRecording=filename=flight.jfr  开启JFR记录，指定文件名字
+- dumponexit 程序退出的时候是否导出.jfr文件
+- maxage 文件最多保存时间
+- maxsize 最大文件大小
+- delay 延迟多久开始记录
 
+![](https://a.a2k6.com/gerald/i/2024/01/28/lcpu.jpg)
 
+然后我们用JMC打开这个文件，JMC 也就是 Java mission Control，在JDK的bin目录下面:
+
+![](https://a.a2k6.com/gerald/i/2024/01/28/gmh.jpg)
+
+我们这里选择打开JFR文件:
+
+![](https://a.a2k6.com/gerald/i/2024/01/28/gyz.jpg)
+
+![](https://a.a2k6.com/gerald/i/2024/01/28/3d64.jpg)
+
+![](https://a.a2k6.com/gerald/i/2024/01/28/nzqc.jpg)
+
+#### 应用启动之后启动
+
+```java
+# 标准格式,启动JFR
+jcmd <pid> JFR.start
+# name是记录名称 为采集的JFR 起一个名字
+jcmd 4204 JFR.start name=profile_online  filename=D:\tools\recording.jfr maxage=1d maxsize=1g
+# 停止采集    
+jcmd 4204  JFR.stop name=profile_online
+```
+
+我在IDEA里面启动应用，然后用jcmd去启动JFR有点奇怪的问题，然后我用jar包启动就正常了。
 
 ### 有请async-profiler
 
+```shell
+# 这个页面选择自己合适的架构 https://github.com/async-profiler/async-profiler
+tar -zxvf 下载下来的文件名称
+# 采集CPU事件 采样180s -f后面跟路径,这里直接放在当前路径下
+# 我下载的3.0的bin叫asprof,我没有将其加入到环境变量里面
+./asprof  -e cpu -d 180 -f cpu_profile.jfr  $JVM_PID
+# 使用 async-profiler 采集 JVM 进程中，阻塞超过 100us 的 lock，采样60 秒并输出到文件output.jfr
+./asprof -d 60 -e cpu --lock 1ms -f output.jfr $JVM_PID
+```
 
+这里只做个简单介绍，async-profiler有非常丰富的用法，我们会在后面进行详细介绍。
 
+## 写在最后
 
-
-### 有请jstack
-
-
-
-### 有请Arthas 
-
-
-
-
+刚开始的问题是CPU飙高的原因，那意味着CPU被持续使用，在最开始的时候我的想法是用CPU的能力去套，但是通过一些例子的分析发现，答案就是CPU被持续使用，有点像《年会不能停》里面的对齐颗粒度是什么意思，就是颗粒度对齐，这个过程中又复习了一下CPU调度，线程是应用程序提交的任务，操作系统根据一定的策略将它们放到不同核心的队列里面，并发并行处于其中。JFR的使用相当简单，又直接位于JDK内部，所以优先介绍了JFR，async-profiler功能丰富，这里简单的提了一嘴async-profiler。那么如何定位线上Java应用CPU飙高呢，我们就需要对JVM做分析，可以用JFR进行记录，也可以用async-profiler进行采样，然后用JMC分析采样之后的文件。
 
 ## 参考资料
 
@@ -180,3 +228,7 @@ public final void acquireShared(int arg) 0{
 [5] 深度探索JFR - JFR详细介绍与生产问题定位落地 - 1. JFR说明与启动配置  https://zhuanlan.zhihu.com/p/122247741
 
 [6] How to use JDK Flight Recorder (JFR)?  https://access.redhat.com/solutions/662203 
+
+[7] Java 性能工具：async-profiler、JMH 优化实践探析-吴伟杰 https://www.bilibili.com/video/BV1YU4y1q7Nq/?spm_id_from=333.337.search-card.all.click&vd_source=aae3e5b34f3adaad6a7f651d9b6a7799
+
+[8] Java Flight Recording for JDK 8 [closed] https://stackoverflow.com/questions/52296247/java-flight-recording-for-jdk-8
