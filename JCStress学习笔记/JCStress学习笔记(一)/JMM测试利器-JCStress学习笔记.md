@@ -1,641 +1,1505 @@
-# JMM测试利器-JCStress学习笔记
+# 当数组遇上队列: Java线程安全实现详解(一)
+
+> 当你养成一种分析问题、琢磨文章的习惯之后，日积月累；你便会感到复杂的东西也是由少数几个大的部分组成的。这些部分出现的原因和它们之间的相互关系也是可以理解的。与此同时，由于读的东西多了，运算的技巧也高了，你会发现，一些复杂的推演过程大部分是由某些必然的步骤所组成，就比较容易抓住新的关键性的部分 ---  越民义
 
 [TOC]
 
+> 这是一个系列的文章，我们会逐步完善。用到什么讲什么。
+
 ## 前言
 
-我们前文提到，当我们对理论有一些了解，我们就渴望验证，如果无法对理论进行验证，那么我们就可能对理论将信将疑，那对于Java领域的并发理论，一向是难以测试的，更何况调试， 这不仅仅是我们的认知，OpenJDK的	者也是这么认知的:
+最近碰上个有趣的题目，用数组实现一个队列，要求线程安全，高性能。这个问题刚好能糅合一些对基础知识的运用，于是打算做一下，同时展开自己的思考过程。要求是递进式的，首先是用数组实现一个队列，队列的特点是先进先出，先进先出意味着我们要提供一个方法入队和出队方法:
 
-> Circa 2013 (≈ JDK 8) ， we suddenly realized there are no regular concurrency tests that ask hard questions about JMM conformance
->
-> 大约在2013年，也就是JDK8发布的时候，我们突然意识到没有常规的并发测试可以针对JMM的一致性进行深入探究。
+- pushBack:  将元素放到队尾，如果队列满了，返回添加失败。
+- popFront:   从队头开始出队 ，如果队列为空返回失败。
 
-> Attempts to contribute JMM tests to JCK were futile: probabilistic tests
->
-> 尝试将JMM测试贡献给JCK是徒劳的：这是概率性测试。
+也可以是从队头入队，然后从队尾出队:
 
-> JVMs are notoriously awkward to test: many platforms, many compilers, many compilation and runtime modes, dependence on runtime profile
->
-> JVM是出了名的难以测试， 涉及多个平台，多个编译器、多种编译和运行时模式，以及依赖的配置文件，所以测试起来比较麻烦。
+- pushFront: 队头入队   如果队列满了，返回添加失败
+- popBack:  队尾出队
 
-这也就是JCStress诞生的原因，我们希望有一个测试框架对JMM进行测试，方便我们验证我们的猜想是否正确。但是关于JCStress这一方面的资料一向少之又少，我期待自己是第一手资料的获得者，于是我尝试看JCStress给出的文档,  首先我来到了JCStress在GitHub上的仓库, 看到了下面一段话:
+![](https://a.a2k6.com/gerald/i/2024/06/28/45qf.png)
 
-In order to understand jcstress tests and maybe write your own, it might be useful to work through the  jcstress-samples. The samples come in three groups:
+有时候我们也希望知道这个队列实际存储了几个元素:
 
-通过JCStress-sample，可以帮助你理解JCStress测试，帮助你写出自己的测试
+- size方法: 返回了队列实际存储了多少个元素
 
-- **APISample** target to explain the jcstress API;
+## 首先用数组实现队列
 
-​       APISample 的目标是解释jcstress的API 
-
-- **JMMSample** target to explain the basics of Java Memory Model;
-
-​      JMM的Sample的目标是解释Java内存模型的基本概念
-
-- **ConcurrencySample** show the interesting concurrent behaviors of standard library.
-
-​     展示标准库有趣的并发行为   
-
-fine，接下来我们就直接尝试阅读范例来学习一下JCStress是如何使用的。
-
-## 开始阅读
-
-这些范例我们有两种方式可以拿到:
-
-- 从Github上下载一下JCStress的源码 , 地址如下: https://github.com/openjdk/jcstress.git
-- maven仓库直接获取对应的依赖:
-
-```xml
-<dependency>
-	<groupId>org.openjdk.jcstress</groupId>
-    <artifactId>jcstress-samples</artifactId>
-    <version>0.3</version>
- </dependency>
-```
-
-我们首先阅读的第一个类叫:
+有了设计目标就可以着手编写代码了，在Java里面首先我们需要一个类，类里面存放数据和行为, 为了让我们的队列更通用一些，我们将为我们的队列引入泛型支持，但是在Java中无法实现泛型数组的语法，也就是下面这样:
 
 ```java
-/*
-    This is our first concurrency test. It is deliberately simplistic to show
-    testing approaches, introduce JCStress APIs, etc.
-	这是我们第一个并发测试，这个测试被刻意的做的很简单,以便展示测试方法、介绍JCStress API等方法。
-    Suppose we want to see if the field increment is atomic. 
-    我们想看下字段的递增是否是原子性的.
-    We can make test with two actors, both actors incrementing the field and recording what value they observed into the result     object. 
-    我们可以用两个actor进行测试，两个actor都对字段进行自增，并将观察到的值记录到result对象里面
-    As JCStress runs, it will invoke these methods on the objects holding the field once per each actor and instance, and record     what results are coming from there.
-    当JCStress运行时，她会对每个"actor"和实例进行一次方法调用，并记录调用的结果。
-    Done enough times, we will get the history of observed results, and that
-    would tell us something about the concurrent behavior. For example, running
-    this test would yield:
-    进行充足的测试之后, 我们将会得到观察结果的历史，将会告诉我们并发行为发生了什么,运行这些测试将产生:
-      [OK] o.o.j.t.JCStressSample_01_Simple
-      (JVM args: [-server])  请求虚拟机以server方式运行
-      观察状态           发生的情况		   期待	          解释    
-      Observed state   Occurrences   Expectation  Interpretation
-       											  // 两个线程得出了相同的值: 原子性测试失败 	
-                1, 1    54,734,140    ACCEPTABLE  Both threads came up with the same value: atomicity failure.
-                								  // actor1 先新增  后actor2新增
-                1, 2    47,037,891    ACCEPTABLE  actor1 incremented, then actor2.
-                								  // actor2 先增加, actor1后增加		
-                2, 1    53,204,629    ACCEPTABLE  actor2 incremented, then actor1.
-      如何运行JCStress测试,            
-     How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t JCStress_APISample_01_Simple
- */
- 标记这个类是需要JCStress测试的类
-// Mark the class as JCStress test.
+T[] array = new T[5];
+```
+
+在C#中我们就可以这么声明:
+
+```java
+using System;
+class Program
+{
+    public static void Main(string[] args)
+    {
+          // 声明并初始化一个整型数组
+        int[] intArray = new int[5];
+        intArray[0] = 1;
+        Console.WriteLine(intArray[0]);
+
+        // 声明并初始化一个字符串数组
+        string[] stringArray = new string[5];
+        stringArray[0] = "Hello";
+        Console.WriteLine(stringArray[0]);
+
+        // 使用泛型方法创建和操作泛型数组
+        CreateAndOperateArray<int>(10, 5);
+        CreateAndOperateArray<string>("World", 5);
+    }
+    static void CreateAndOperateArray<T>(T initialValue, int size)
+    {
+        T[] array = new T[size];
+        array[0] = initialValue;
+        Console.WriteLine(array[0]);
+    }
+}
+```
+
+回顾ArrayList的实现你会发现，ArrayList实现泛型化，底层仍然是一个Object数组，然后在get的时候，做了强制类型转换
+
+```java
+public E get(int index) {
+    rangeCheck(index);
+    return elementData(index);
+}
+```
+
+```java
+@SuppressWarnings("unchecked")
+E elementData(int index) {
+    return (E) elementData[index];
+}
+```
+
+所以我们也是用这样的思路来解决类型转换问题。解决完泛型问题，我们来设计pushBack方法，这个方法的设计目标是将请求入队的元素放在队尾，如果我们基于引用实现，在类里面我们可以放一个尾节点(指针)指向最后一个节点。用数组实现的时候我们存储的就是尾节点的下标了，在一开始队列初始化的时候尾结点和头节点可以都指向0下标，于是我们就需要有一个方法计算出来我们的元素应该放在哪个位置，我们自然就想到了取余，pushBack方法将元素放在队尾，设定我们有hello5、hello4、hello3、hello2、hello1 这五个元素依次通过进入队列，hello5对应0位置，hello4对应1位置，hello3对应2位置，hello2对应3位置，hello1对应4位置:
+
+![](https://a.a2k6.com/gerald/i/2024/07/03/kme3.png)
+
+在这个入队过程中，队尾在朝前移动的 :  0 => 1 => 2 => 3 => 4  所以我们可以声明一个整型的变量记录队尾的位置:
+
+```java
+// capacity 是数组容量
+int tail = 0;
+```
+
+计算下一个位置的公式就可以为: next  = (tail++) %  capacity ,  现在让我们考虑入队是指针迁移，出队就是指针后移，所以popBack方法首先获取当前头节点的位置，然后指针后移即可。现在我们可以写出下面的代码:
+
+```java
+public class FixMemoryQueue<T> {
+    /**
+     * 存储数据的泛型数组
+     */
+    private Object[] dataArray;
+
+    /**
+     * 记录头结点的位置
+     */
+    private int head;
+
+    /**
+     * 记录尾结点的位置
+     */
+    private int tail;
+    /**
+     * 记录队列存储了多少元素
+     */
+    private int size;
+
+    private int capacity;
+
+    public FixMemoryQueue(int capacity) {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException();
+        }
+        this.capacity = capacity;
+        this.head = 0;
+        this.tail = 0;
+        this.size = 0;
+        dataArray = new Object[capacity];
+    }
+
+
+    public boolean pushBack(T t) {
+        if (size == capacity) {
+            return false;
+        }
+        dataArray[tail++ % capacity] = t;
+        size++;
+        return true;
+    }
+
+     public T popFront() {
+        if (size == 0) {
+            return null;
+        }
+        size--;
+        T result = (T) dataArray[head];
+        dataArray[head] = null;
+        head++;
+        return result;
+    }
+
+    public int size() {
+        return size;
+    }
+}
+```
+
+这里我还想实现方法返回值给出出队成功还是失败, 那怎么接出队的元素呢?  其实再有一个类就好了, 我们可以将方法变形为:
+
+```java
+public boolean popFront(DataHolder<T> dataHolder) {
+    if (Objects.isNull(dataHolder)) {
+        dataHolder = new DataHolder<>();
+    }
+    if (size == 0) {
+        return false;
+    }
+    size--;
+    T result = (T) dataArray[head];
+    dataHolder.setT(result);
+    dataArray[head] = null;
+    head++;
+    return true;
+}
+```
+
+```java
+public static class DataHolder<T> {
+    T t;
+
+    public void setT(T t) {
+        this.t = t;
+    }
+
+    public T getT() {
+        return t;
+    }
+}
+```
+
+现在让我们从队头入队pushFront，队尾出popBack,  也就是说入队顺序是hello5、hello4、hello3、hello2、hello1, 出队顺序是hello1、hello2、hello3、hello4、hello5。也就是先进后出。
+
+![](https://a.a2k6.com/gerald/i/2024/07/03/43o84.png)
+
+入队的过程中头指针前移，这次是尾指针固定不动。 因此我们可以给出下面这两个方法:
+
+```java
+public  boolean pushFront(T t){
+    if (size == capacity) {
+        return false;
+    }
+    int next = (size ) % capacity;
+    this.head = next;
+    dataArray[next] = t;
+    size++;
+    return true;
+}
+```
+
+```java
+public T popBack(){
+    if (size == 0) {
+        return null;
+    }
+    T result = (T)dataArray[head];
+    size--;
+    head--;
+    return  result;
+}
+```
+
+注意到现在为止我们都保持了良好的操作对称性，即先进(pushBack)先出(popFront) , 先进(pushFront)后出(popBack)。现在让我们为这个队列加上一个限制词，我们希望他线程安全。
+
+## 然后是线程安全
+
+在《我们来聊聊线程安全吧》这一篇我们已经对线程安全进行了详细论述，虽然我们没有为线程安全找到一个形式化的定义，但是我们做到了工程化的回答，也就是说对于线程安全的集合来说， 我们要求以下三点:
+
+1. 不能丢值：比如我们上面的队列，两个线程都向集合放值，集合可以容纳两个元素的时候，不应该出现丢值，在上面我们实现的队列中假设两个线程都添加一个，后操作的可能把先操作的覆盖掉。
+
+​	![](https://a.a2k6.com/gerald/i/2024/07/03/4cmz.png)
+
+2. 出现死循环，导致调用方无法接着往下执行。
+
+3. 多个线程操作的时候应当像线程单独排队操作的效果，也就是隔离性，这也被称为一致性，在《我们来聊聊线程安全吧》这一篇里面我们已经讨论过这个弱一致性了，当时我对这个弱一致性的理解为，多个线程并发读写，多个读线程在什么时候看到的是一致的，由于CopyOnWriteArrayList的特性，每次操作的时候都会产生新的数组，所以如果多个读线程在写之前获得了迭代器，那么这些迭代器遍历出来的元素就是一样的。
+
+   对于线程安全的集合我们不能靠集合的大小去遍历的原因在于，并发读写的时候，集合实际的大小是在变化的。但是线程安全的集合也需要迭代，因此线程安全的集合在遍历的时候，可以通过迭代器来遍历。下面是CopyOnWriteArrayList的源码:
+
+```java
+// CopyOnWriteArrayList的源码
+public Iterator<E> iterator() {
+    return new COWIterator<E>(getArray(), 0);
+}
+// 省略部分代码
+static final class COWIterator<E> implements ListIterator<E> {
+ /** Snapshot of the array */
+ private final Object[] snapshot;
+ /** Index of element to be returned by subsequent call to next.  */
+ private int cursor;
+    
+ private COWIterator(Object[] elements, int initialCursor) {
+      cursor = initialCursor;
+      snapshot = elements;
+  }
+} 
+
+```
+
+![](https://a.a2k6.com/gerald/i/2024/07/03/30nz.png)
+
+看CopyonWriteArrayList的设计思想的时候，我想到了MySQL的MVCC(Multi-Version Concurrency Control) 多版本并发控制，感觉隐隐约约有些类似。MySQL根据事务的隔离级别来决定是否给予查询者查看最新的数据，在对数据进行更改的时候，MySQL并不会直接操纵数据，而是会先将改变记录到undo log里面，同时在MySQL的行记录里面有多个隐藏列，涉及事务的有两个值得我们注意:
+
+- trx_id： 每次一个事务对某条聚簇索引记录进行改动时，都会把该事务得到事务id赋值给trx_id隐藏列。
+
+- roll_pointer: 每次对某条聚簇索引记录进行改动时，都会把旧的版本写入到undo 日志中，然后这个隐藏列就相当于一个指针，可以通过它来记录修改前的信息。
+
+![](https://a.a2k6.com/gerald/i/2024/07/06/pnfv9.jpg)
+
+每次对记录进行改动，都会记录一条undo日志，每条undo日志也都会有roll_pointer属性，这些日志可以串起来一条链表。版本链的头结点记录的是当前记录最新的值。事务在执行过程中，只有在第一次真正修改记录时(INSERT DELETE UPDATE)，才会被分配一个单独的事务id, 这个事务id是递增的。对于隔离级别是READ UNCOMMITED来说，由于可以读取未提交事务修改过的数据，直接读取最新节点即可。对于READ COMMITED 和  REPEATABLE READ隔离级别的事务来说，都必须保证读到已经提交过的事务，那意味着不能读取最新的Undo Log。那现在的问题就演变成了该读取链表中的哪条记录，这也就引出了READ VIEW这个概念。
+
+回想了一下，感觉又不太想，我以前对CopyOnWriteArrayList这个一致性的理解是，多个线程在产生CopyOnWriteArrayList的迭代器的时候，在产生完成之前没有其他线程对CopyOnWriteArrayList做修改添加操作，这样遍历出来的元素就是一致的。于是我认为ConcurrentHashMap应该也是这样，也生成一个快照，现在让我们来看ConcurrentHashMap 生成迭代器的源码:
+
+```java
+//  ConcurrentHashMap 源码
+public Set<Map.Entry<K,V>> entrySet() {
+    EntrySetView<K,V> es;
+    return (es = entrySet) != null ? es : (entrySet = new EntrySetView<K,V>(this));
+}
+static final class EntrySetView<K,V> extends CollectionView<K,V,Map.Entry<K,V>>  implements Set<Map.Entry<K,V>>, java.io.Serializable {
+  EntrySetView(ConcurrentHashMap<K,V> map) { super(map); }   
+}
+abstract static class CollectionView<K,V,E>  implements Collection<E>, java.io.Serializable {
+        final ConcurrentHashMap<K,V> map;
+    CollectionView(ConcurrentHashMap<K,V> map)  { this.map = map; }
+}    
+```
+
+这里看源码可以发现，我们在调用entrySet的时候，生成了一个EntrySetView对象，这个对象持有当前ConcurrentHashMap对象的引用。我们接着看迭代器方法:
+
+```java
+public Iterator<Map.Entry<K,V>> iterator() {
+    ConcurrentHashMap<K,V> m = map;
+    Node<K,V>[] t;
+    int f = (t = m.table) == null ? 0 : t.length;
+    return new EntryIterator<K,V>(t, f, 0, f, m);
+}
+```
+
+这里获取了ConcurrentHashMap的数组节点，然后构造了一个EntryIterator对象:
+
+```java
+// 省略无关代码
+static final class EntryIterator<K,V> extends BaseIterator<K,V>
+        implements Iterator<Map.Entry<K,V>> {
+        EntryIterator(Node<K,V>[] tab, int index, int size, int limit,
+                      ConcurrentHashMap<K,V> map) {
+            super(tab, index, size, limit, map);
+        } 
+}
+```
+
+最终产生的迭代器对象持有创建entrySet的ConcurrentHashMap对象的引用和ConcurrentHashMap内部数组的引用。则A、B、C三个读线程去遍历的时候，产生的迭代器对象不一样，保证了线程安全，如果在产生迭代器对象的过程中不扩容，则A、B、C三个读线程持有相同的数组引用:
+
+![](https://a.a2k6.com/gerald/i/2024/07/06/2zm0.jpg)
+
+这在某种程度上也维持了一致性，只不过不像CopyOnWriteArrayList那么强，因为CopyOnWriteArrayList每次操作都是在新的上面进行操作。但是ConcurrentHashMap在扩容之前都是在原来的基础做操作，如果ConcurrentHashMap不扩容，只是在原来的基础上做修改，可以反应变化? 带着这个疑问我写出来了下面的例子:
+
+```java
+public class ConcurrentHashMapTest {
+    private volatile boolean isComplete = false;
+
+    public static void main(String[] args) throws InterruptedException {
+        ConcurrentHashMap<String, Object> map = new ConcurrentHashMap<>();
+        map.put("hello", "world");
+        ConcurrentHashMapTest concurrentHashMapTest = new ConcurrentHashMapTest();
+        new Thread(() -> {
+            Set<Map.Entry<String, Object>> entries = map.entrySet();
+            Iterator<Map.Entry<String, Object>> it = entries.iterator();
+            concurrentHashMapTest.isComplete = true;
+            while (true) {
+                if (!concurrentHashMapTest.isComplete){
+                    System.out.println(map.contains("hello"));
+                    while (it.hasNext()) {
+                        Map.Entry<String, Object> entry = it.next();
+                        System.out.println(entry.getKey() + ":" + entry.getValue());                 
+                    }
+                    break;
+                }
+            }
+        }).start();
+        new Thread(() -> {
+            while (true) {
+                if (concurrentHashMapTest.isComplete){
+                    map.remove("hello");
+                    System.out.println("移除指定key");
+                    concurrentHashMapTest.isComplete = false;
+                    break;
+                }
+            }
+        }).start();
+        TimeUnit.SECONDS.sleep(100);
+    }
+}
+```
+
+输出结果为: 
+
+```
+移除指定key
+false
+hello:world
+```
+
+输出结果跟我的预期不相同，这是为什么呢，明明已经不包含这个key了，带着这个问题，我开始了debug:
+
+![](https://a.a2k6.com/gerald/i/2024/07/06/12l1mk.jpg)
+
+迭代器中的map确实为空，但是有个next成员变量还有值，是不是我们忽略了哪里，我们再回顾一下源码:
+
+```java
+static class BaseIterator<K,V> extends Traverser<K,V> {
+    final ConcurrentHashMap<K,V> map;
+    Node<K,V> lastReturned;
+    BaseIterator(Node<K,V>[] tab, int size, int index, int limit,
+                ConcurrentHashMap<K,V> map) {
+        super(tab, size, index, limit);
+        this.map = map;
+        advance();
+    }
+}
+```
+
+答案就在advance这个方法上:
+
+```java
+final Node<K,V> advance() {
+    Node<K,V> e;
+    // advance来自Traverser方法
+    // next 是Traverser的成员变量
+    if ((e = next) != null)
+        e = e.next;
+    for (;;) {
+        Node<K,V>[] t; int i, n;  // must use locals in checks
+        if (e != null)
+            // 因此next这个节点就挂上了值
+            return next = e;
+        if (baseIndex >= baseLimit || (t = tab) == null ||
+            (n = t.length) <= (i = index) || i < 0)
+            return next = null;
+        // tabAt 确定数组的指定位置是否有值，且判断是否是链表或者树
+        // 如果是树就去获取链表或者树的第一个节点
+        if ((e = tabAt(t, i)) != null && e.hash < 0) {
+            if (e instanceof ForwardingNode) {
+                tab = ((ForwardingNode<K,V>)e).nextTable;
+                e = null;
+                pushState(t, i, n);
+                continue;
+            }
+            else if (e instanceof TreeBin)
+                e = ((TreeBin<K,V>)e).first;
+            else
+                e = null;
+        }
+        if (stack != null)
+            recoverState(n);
+        else if ((index = i + baseSize) >= n)
+            index = ++baseIndex; // visit upper slots if present
+    }
+}
+```
+
+所以结果也是符合我们的预期的，只不过是我们对迭代器的理解出了问题，迭代器像是链表，我们总需要一个头结点来不断的往下走，所以在构造迭代器的时候，会构造出第一个头节点。
+
+## 回顾弱一致性
+
+我们现在再来回忆一下，Java文档中对弱一致性(见参考文档[3])的定义, 这个定义来自JUC包下面的package-summary.html， 关于弱一致性是这么论述的:
+
+Most concurrent Collection implementations (including most Queues) also differ from the usual java.util conventions in that their Iterators and Spliterators provide weakly consistent rather than fast-fail traversal:
+
+> 大部分并发集合实现(包括大多数队列)也与通常的java.util的约定不同的，他们的迭代器(Iterators)  和 分裂器(Spliterators) 提供的是弱一致的遍历，而不是快速失败遍历:
+
+1. they may proceed concurrently with other operations: 可与其他操作并行
+
+2. they will never throw ConcurrentModificationException：不会抛出ConcurrentModificationException
+
+3. they are guaranteed to traverse elements as they existed upon construction exactly once, and may (but are not guaranteed to) reflect any modifications subsequent to construction：  迭代器可以确保遍历一次在迭代器产生的时候就存在的元素，但是对于之后的修改，迭代器可能接收到，也可能接收不到。
+
+我们对弱一致性的第一点要求取否定，就能获得强一致性集合的定义:  也就是不能和其他操作并行。强一致集合的我们很好构造，我们只需要在入队和出队方法上加锁就可以了。
+
+## 悲观锁实现
+
+```java
+public class PessimisticFixMemoryQueue<T> {
+
+    /**
+     * 存储数据的泛型数组
+     */
+    private Object[] dataArray;
+
+    /**
+     * 记录头结点的位置
+     */
+    private int head;
+
+    /**
+     * 记录尾结点的位置
+     */
+    private int tail;
+    /**
+     * 记录队列存储了多少元素
+     */
+    private int size;
+
+    private int capacity;
+
+    final ReentrantLock lock = new ReentrantLock();
+
+    public PessimisticFixMemoryQueue(int capacity) {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException();
+        }
+        this.capacity = capacity;
+        this.head = 0;
+        this.tail = 0;
+        this.size = 0;
+        dataArray = new Object[capacity];
+    }
+
+    public boolean pushBack(T t) {
+        final ReentrantLock lock = this.lock;
+        try {
+            if (size == capacity) {
+                return false;
+            }
+            dataArray[tail++ % capacity] = t;
+            size++;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+
+    }
+
+    public T popFront() {
+        final ReentrantLock lock = this.lock;
+        try {
+            if (size == 0) {
+                return null;
+            }
+            size--;
+            T result = (T) dataArray[head];
+            dataArray[head] = null;
+            head++;
+            return result;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean pushFront(T t) {
+        final ReentrantLock lock = this.lock;
+        try {
+            if (size == capacity) {
+                return false;
+            }
+            int next = (size) % capacity;
+            this.head = next;
+            dataArray[next] = t;
+            size++;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+
+    }
+
+    public T popBack() {
+        final ReentrantLock lock = this.lock;
+        try {
+            if (size == 0) {
+                return null;
+            }
+            size--;
+            T result = (T) dataArray[head];
+            dataArray[head] = null;
+            head--;
+            return result;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public int size() {
+        final ReentrantLock lock = this.lock;
+        try {
+            return size;
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+这种的确实现了我们对线程安全集合的要求，一致性也是最强的，但是性能也比较弱，原因在于多线程在操作队列的时候都是排队执行，思想和Vector集合一样。
+
+##  读写锁实现
+
+但有时候我们可能不那么需要强一致，我们希望能够放松对一致性的要求来换性能提升，现在让我们再放松一下对一致性的要求，读写互斥，但是读读可以并行，同时我们也选择移除size上面的锁，改为在size字段上加上volatile来确保能获得相对新的值。但注意在这个队列里面我们的读其实也是写，伴随着下标移动，所以入队方法和出队方法上都需要加写锁，然后在获取容量的方法上加读锁:
+
+```java
+public class RWFixMemoryQueue<T> {
+    /**
+     * 存储数据的泛型数组
+     */
+    private Object[] dataArray;
+
+    /**
+     * 记录头结点的位置
+     */
+    private int head;
+
+    /**
+     * 记录尾结点的位置
+     */
+    private int tail;
+    /**
+     * 记录队列存储了多少元素
+     */
+    private int size;
+
+    private int capacity;
+
+    final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+
+
+    public RWFixMemoryQueue(int capacity) {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException();
+        }
+        this.capacity = capacity;
+        this.head = 0;
+        this.tail = 0;
+        this.size = 0;
+        dataArray = new Object[capacity];
+    }
+
+
+    public boolean pushBack(T t) {
+        final ReentrantReadWriteLock.WriteLock writeLock = this.lock.writeLock();
+        try {
+            if (size == capacity) {
+                return false;
+            }
+            dataArray[tail++ % capacity] = t;
+            size++;
+            return true;
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public T popFront() {
+        final ReentrantReadWriteLock.ReadLock writeLock = this.lock.readLock();
+        ;
+        try {
+            if (size == 0) {
+                return null;
+            }
+            if (size == 0) {
+                return null;
+            }
+            size--;
+            T result = (T) dataArray[head];
+            dataArray[head] = null;
+            head++;
+            return result;
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public boolean pushFront(T t) {
+        final ReentrantReadWriteLock.WriteLock writeLock = this.lock.writeLock();
+        ;
+        try {
+            if (size == capacity) {
+                return false;
+            }
+            int next = (size) % capacity;
+            this.head = next;
+            dataArray[next] = t;
+            size++;
+            return true;
+        } finally {
+            writeLock.unlock();
+        }
+
+    }
+
+    public T popBack() {
+        final ReentrantReadWriteLock.WriteLock writeLock = this.lock.writeLock();
+        try {
+            if (size == 0) {
+                return null;
+            }
+            size--;
+            T result = (T) dataArray[head];
+            dataArray[head] = null;
+            head--;
+            return result;
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public int size() {
+        final ReentrantReadWriteLock.ReadLock readLock = this.lock.readLock();
+        try {
+            return size;
+        } finally {
+            readLock.unlock();
+        }
+    }
+}
+```
+
+其实我们还可以再放松一点对一致性的要求，在size上加上volatile，移除读锁来，这样size可能不那么准确，但是不用加锁相对性能更强。
+
+## 乐观锁实现
+
+### 入队方法改造
+
+那有没有无锁的方案，这也就是我们的原子类了，首先改造的是pushBack方法:
+
+```java
+public boolean pushBack(T t) {
+    if (size == capacity) {
+        return false;
+    }
+    dataArray[tail++ % capacity] = t;
+    size++;
+    return true;
+}
+```
+
+对于入队方法我们要解决三个问题需要我们解决:
+
+1. 第一队列满了不能再入队，避免数组下标越界
+2. 不能丢值，假设队列容量为5，那么两个线程入队，那么队列的实际大小应当是2，不能是1.
+
+3. 队列的实际大小和放入的元素数量相等，这里强调的是不能越界，跟第一条是重复的。
+
+基于上面三点要求，我们写出的原子类pushBack的版本如下所示:
+
+```java
+public class AtomicFixMemoryQueue<T> {
+    /**
+     * 存储数据的泛型数组
+     */
+    private AtomicReferenceArray<T> dataArray;
+
+    /**
+     * 记录头结点的位置
+     */
+    private AtomicInteger head;
+
+    /**
+     * 记录尾结点的位置
+     */
+    private AtomicInteger tail;
+    /**
+     * 记录队列存储了多少元素
+     */
+    private  AtomicInteger size;
+
+    private int capacity;
+
+    public AtomicFixMemoryQueue(int capacity) {
+        if (capacity <= 0) {
+            throw new IllegalArgumentException();
+        }
+        this.capacity = capacity;
+        this.head = new AtomicInteger(0);
+        this.tail = new AtomicInteger(0);
+        this.size = new AtomicInteger(0);
+        dataArray = new AtomicReferenceArray<>(capacity);
+    }
+
+
+    public boolean pushBack(T t) {
+        if (Objects.isNull(t)){
+            throw new NullPointerException();
+        }
+        while(size.get() < capacity){
+           int currentTail = tail.get();
+           int nextTail = tail.get() + 1;
+           // 交换成功
+           if (tail.compareAndSet(currentTail,nextTail)){
+               if (dataArray.compareAndSet(nextTail,null,t)){ // 语句一
+                    size.incrementAndGet();
+               }
+           }
+           return true; // 语句二
+        }
+        return false;
+    }
+}    
+```
+
+然后我们随手给一个用例:
+
+```java
+AtomicFixMemoryQueue<String>  atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
+for (int i = 0; i < 5 ; i++) {
+    // RandomUtil 来自hutool,也可以随手扔点数字扔进我们构造的队列里面
+    new Thread(()->{
+        atomicFixMemoryQueue.pushBack("aaa"+ RandomUtil.randomNumbers(5));
+    }).start();
+}
+TimeUnit.SECONDS.sleep(2);
+System.out.println(atomicFixMemoryQueue.dataArray);
+```
+
+然后输出结果为：[null, aaa35845, aaa06412, aaa49904, null]。很明显我们的pushBack没有满足我们的要求，我们入队了五个元素，但是实际上只放入了三个，除此之外，我们的队列也不允许放入空值，那究竟错在哪里呢，错在语句一和语句二上，在入队的时候我们没有执行取余操作，然后再成功入队之后没有直接返回。明确了这两点之后，我们改造之后的样例如下图所示:
+
+```java
+public boolean pushBack(T t) {
+    if (Objects.isNull(t)){
+        throw new NullPointerException();
+    }
+    while(size.get() < capacity){
+       int currentTail = tail.get();
+       int nextTail = tail.get() + 1;
+       // 交换成功
+       if (tail.compareAndSet(currentTail,nextTail)){
+           if (dataArray.compareAndSet( currentTail % capacity,null,t)){
+                size.incrementAndGet();
+           }
+           return true;
+       }
+    }
+    return false;
+}
+```
+
+改造成这样之后，感觉好像没有多大问题了，但我还是担心在自旋失败比较多的情况下，导致CPU使用率飙升，于是在这里引入退避策略，也就是说让失败执行超过一定次数的线程先休息一会，那应该怎么休息呢，大致有三种方式:
+
+1. Thread.sleep();  时间不好估计
+2. 放个空循环 
+3. 也是最推荐的JDK 9 新加入的方法,  Thread.onSpinWait, 这个方法请求将更多CPU资源分配给其他线程，而无需实际调用操作系统调度器和将就绪线程出队。
+4. Thread.yield 让出CPU
+
+于是我们就在入队方法里面定义一个让步策略:
+
+```java
+private static final int MAX_ATTEMPTS = 100;
+public boolean pushBack(T t) {
+    if (Objects.isNull(t)) {
+        throw new NullPointerException();
+    }
+    while (size.get() < capacity) {
+        int attempts = 0;
+        int currentTail = tail.get();
+        int nextTail = tail.get() + 1;
+        // 交换成功
+        if (tail.compareAndSet(currentTail, nextTail)) {
+            if (dataArray.compareAndSet(currentTail % capacity, null, t)) {
+                size.incrementAndGet();
+            }
+            return true;
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return false;
+}
+```
+
+```java
+private void backOff(int attempts) {
+    if (attempts == MAX_ATTEMPTS) {
+        for (int i = 0; i < MAX_ATTEMPTS; i++) {
+            Thread.onSpinWait();
+        }
+    }
+}
+```
+
+### 出队方法改造
+
+有了入队方法的改造，我们同样对出队方法做如下改造:
+
+```java
+public T popFront() {
+    while (size.get() > 0) {
+        int headIndex = head.get();
+        int tailIndex = tail.get();
+        if (headIndex == tailIndex){
+            return null;
+        }
+        int attempts = 0;
+        if (head.compareAndSet(headIndex, headIndex + 1)) {
+            size.decrementAndGet();
+            T result = dataArray.get(headIndex);
+            dataArray.compareAndSet(headIndex,result,null);
+            return result;
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return null;
+}
+```
+
+### 给出测试样例
+
+我们上面给了几个测试样例，但我还是有些疑心，虽然在我的电脑上跑出来了，但是放别人的电脑上可能跑不出来，我们可以预测并发的结果集，但是我们不能准确预测并发执行会跑到结果集的哪一个结果上。于是我们就想到JCStress，如果不熟悉JCStress，参看《JMM测试利器-JCStress学习笔记》这篇文章，见参考链接[4]。如果觉得命令行不太方便，IDEA里面可以选择安装一个JCStress插件, 这样跑JCStress速度更快。那测试用例应该怎么写,  首先我们应当保证并发写值的时候应当不出现数组下标越界异常:
+
+```java
 @JCStressTest
+
 // These are the test outcomes.
-@Outcome(id = "1, 1", expect = Expect.ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
-@Outcome(id = "1, 2", expect = Expect.ACCEPTABLE, desc = "actor1 incremented, then actor2.")
-@Outcome(id = "2, 1", expect = Expect.ACCEPTABLE, desc = "actor2 incremented, then actor1.")
-// 状态对象     
+@Outcome(id = "1, 1", expect = Expect.ACCEPTABLE, desc = "Both actors threw exception")
+@Outcome(id = "1, 0", expect = Expect.ACCEPTABLE, desc = "Only actor1 threw exception")
+@Outcome(id = "0, 1", expect = Expect.ACCEPTABLE, desc = "Only actor2 threw exception")
+@Outcome(id = "0, 0", expect = Expect.ACCEPTABLE, desc = "No exceptions")
 // This is a state object
 @State
-public class APISample_01_Simple {
-    
-    int v;
-    
+public class API_01_Simple {
+
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(1);
+
     @Actor
     public void actor1(II_Result r) {
-        // 将结果actor1的行为产生的记录进r1
-        // record result from actor1 to field r1 
-        r.r1 = ++v; 
+        try{
+            for (int i = 0; i < 1000 ; i++) {
+                atomicFixMemoryQueue.pushBack("11");
+            }
+        }catch (Exception  e){
+            r.r1 = 1;
+        }
     }
-    
+
     @Actor
     public void actor2(II_Result r) {
-        //将actor2的结果记录进r2
-        // record result from actor2 to field r2
-        r.r2 = ++v; 
+        try{
+            for (int i = 0; i < 100; i++) {
+                atomicFixMemoryQueue.pushBack("11");
+            }
+        }catch (Exception  e){
+            r.r2 = 1;
+        }
     }
 }
 ```
 
-我们上面已经对这个测试示例进行了简单的解读，这里我们要总结一下JCStress的工作模式 ,  我们在类里面声明我们希望JCStress执行的行为，这些行为的结果被记录到结果中,  最后和@Outcome注解中声明的内容做对比, 输出对应的结果:
-
-![iqv8hp.png](https://i.328888.xyz/2023/05/12/iqv8hp.png)
-
-现在这段代码, 我们唯一还不明白作用的就是@outcome、@State、   @Actor。我们还是看源码上的注释:
-
-- State
-
-> State is the central annotation for handling test state. It annotates the class that holds the data mutated/read by the tests.
-> Important properties for the class are: 
->
-> State 是处理测试状态的中心注解，有这个注解的类，在测试中负责读取和修改数据。这些类要求以下两个属性
->
-> 1. State class should be public, non-inner class.
->
->    State 类应当是public ，而不是内部类
->
-> 2. State class should have a default constructor.
->
-> ​    State 类应当有一个默认的构造函数
->
-> During the run, many State instances are created, and therefore the tests should try to minimize state instance footprint. All actions in constructors and instance initializers are visible to all Actor and Arbiter threads.
->
-> 在运行期间，有State注解的类会被大量创建，因此在测试中应当尽量减少State实例的占用，所有构造函数中的操作和变量初始化代码块对所有的Actor 和Arbiter 可见。
-
-constructor 这个我是知道的，instance initializers 是 指直接对类的成员变量进行初始化的操作:
+然后这个测试只跑出来了结果为0， 0的， 说明没有下标越界，照我的想法应该有下标越界的。我们再把pushBack这个方法拉出来看一下:
 
 ```java
-class Dog {
-  private String name = "旺财";
-  // 这种声明 我是头一次见  
-  {name = "小小狗"}  
-}
-```
-
-- outcome
-
-> Outcome describes the test outcome, and how to deal with it. It is usually the case that a JCStressTest has multiple outcomes, each with its distinct id(). id() is cross-matched with Result-class' toString() value. id() allows regular expressions. 
->
-> OutCome注解用于描述测试结果, 以及如何处理它。通常情况下，一个JCStress测试有多个输出结果，每个结果都有一个唯一id 。id和观测结果类的toString方法返回值相匹配，id允许正则表达式。
->
-> For example, this outcome captures all results where there is a trailing "1":   \@Outcome(id = ".*, 1", ...) When there is no ambiguity in what outcome should match the result, the annotation order is irrelevant. When there is an ambiguity, the first outcome in the declaration order is matched. There can be a default outcome, which captures any non-captured result. It is the one with the default id().
->
-> 例如，我们在id里面填入的属性为.*, 1，那么将会匹配的字符串形式为尾巴为, 1的结果，比如2,1。当预计结果与实际输出结果匹配且没有歧义，OutCome的注解顺序是任意的。当预计结果与实际输出结果有歧义时，指存在两个OutCome中的id值存在交集，那么将会匹配第一个注解。所以也可以设置一个默认的输出结果，当实际输出和预计输出不匹配的时候，匹配默认输出。
-
-我们结合APISample_01_Simple的代码来解释，注意在这个类里面两个方法将结果都放在了II_Result上，这是实际输出，II_Result代表有两个变量记录值，JCStress里面有各种各样类似的类来记录结果，II_Result代表提供了两个变量来记录实际运行结果，II代表两个，那么我们是可以大胆推导一下，有I_Result 、III_Result、IIII_Result。是的没有错，如果你觉得你需要测试的结果需要更多的变量来记录，那么需要变量的数量I_Result去JCStress里面找就行了。 然后我们在看下I_Result 的toString方法:
-
-```java
-//省略II_Result的其他方法和成员变量
-@Result
-public class II_Result implements Serializable {
-    public String toString() {
-        return "" + r1 + ", " + r2;
+public boolean pushBack(T t) {
+    if (Objects.isNull(t)) {
+        throw new NullPointerException();
     }
-}
-//省略III_Result的其他方法和成员变量
-@Result
-public class IIII_Result implements Serializable {
-    public String toString() {
-        return "" + r1 + ", " + r2 + ", " + r3 + ", " + r4;
+    while (size.get() < capacity) {
+        int attempts = 0;
+        int currentTail = tail.get(); // 语句二
+        int nextTail = currentTail + 1;
+        // 交换成功
+        if (tail.compareAndSet(currentTail, nextTail)) {
+            if (dataArray.compareAndSet(currentTail % capacity, null, t)) {
+                size.incrementAndGet(); // 语句一
+            }
+            return true;
+        } else {
+            backOff(++attempts);
+        }
     }
+    return false;
 }
 ```
 
-我们会发现II_Result、IIII_Result的toString方法都是将成员变量用逗号拼接。那上面的例子我们就能大致看懂了，JCStress执行APISample_01_Simple，然后将结果和Outcome中的id做比较，如果相等会被记录，expect属性是什么意思呢？对我们希望出现的结果进行评级，哪些是我们重点的结果，一共有四个等级: 
-
-ACCEPTABLE: Acceptable result. Acceptable results are not required to be present 
-
-> 可接受的结果，可接受的结果不要求出现
-
-ACCEPTABLE_INTERESTING:   Same as ACCEPTABLE, but this result will be highlighted in reports.
-
-> 和ACCEPTABLE一样，但是结果出现了就会在报告里面被高亮。
-
-FORBIDDEN:  Forbidden result. Should never be present.
-
-> 禁止出现的结果 应当永远不出现
-
-UNKNOWN:   Internal expectation: no grading. Do not use.
-
-> 未知，不要用
-
-- Actor
-
-> Actor is the central test annotation. It marks the methods that hold the actions done by the threads. The invariants that are maintained by the infrastructure are as follows:
->
-> Actor 是核心测试注解，被它标记的方法将会一个线程所执行，基础架构会维护一组不变的条件:
->
-> 1. Each method is called only by one particular thread.
->
->    每个方法会被一个特殊的线程所调用。
->
-> 1. Each method is called exactly once per State instance.
->
-> ​    每个方法被每个State实例所调用
-
-> Note that the invocation order against other Actor methods is deliberately not specified. 
->
-> 注意Actor所执行的方法调用顺序是故意不指定的。
->
-> Therefore, two or more Actor methods may be used to model the concurrent execution on data held by State instance.
->
-> 因此，可以使用两个或多个Actor方法来模拟对State实例持有数据的并发执行。
->
-> Actor-annotated methods can have only the State or Result-annotated classes as the parameters. 
->
-> 只有被@Result或@State标记的类才能作为Actor方法(拥有Actor注解)的参数
->
-> Actor methods may declare to throw the exceptions, but actually throwing the exception would fail the test.
->
-> Actor方法可能声明抛出异常，但是实际上抛出的异常会导致测试失败。
-
-这里我来解读一下，II_Result 这个类上就带有@Result注解。现在我们要解读的就是++v了，除了++v之外，我们熟悉的还有v++，如果现在问我这俩啥区别，我大概率回答的是++v 先执行自增，然后将自增后的值赋给v，对应的代码应该是像下面这样:
+照我的想法，线程A还没调用语句一完成自增，这个时候线程B进来的，调用语句二拿到尾指针，如果数组大小为1，则tail自增到2，然后dataArray的compareAndSet方法访问数组下标2，应当出现越界，但是跑了几轮测试发现没有，难道里面做了边界检查? 但是在源码里面又没看到，于是我想给我们的队列增加一个访问尾指针的方法，再跑一下测试看看是否会跑出来尾指针大于数组大小的情况:
 
 ```java
-v = v + 1;
-```
-
-那v++呢，先使用值，后递增，我理解应该是像下面这样:
-
-```java
-v = v; 
-v = v + 1;
-```
-
-我们日常使用比较多的应该就是v++了:
-
-```java
-for(int v = 0 ; v < 10 ; v++){}
-```
-
-for循环的括号是个小代码块，第一次执行的时候首先声明了一个v = 0，然后判断v是否小于10，如果小于执行v++，这个时候v的值仍然是0，然后走循环体里面的内容。结合我们上面的理解，这似乎有些割裂，如果按照我对v++的理解，一条语句等价于两条语句，那么这两条语句还分开执行，这看起来非常怪。如果我们将v++对一个变量进行赋值，然后这个变量拿到的就是自增之后的值，我们也可以对我们的理解打补丁，即在循环中两条语句不是顺序执行，先执行v = v，循环体里面的内容执行完毕再执行v = v + 1。那再完善一下呢，i++事实上被称为后缀表达式，语义为i+1，然后返回旧值。++i被称为前缀表达式, 语义为自增返回新值。乍一看好像是自增的，但是我们在细化一下，在自增之前都要读取变量的值，所以无论是++v，还是v++，都需要先读值再自增，所以这是两个操作，在Java里面不是原子的，这是我们的论断，我们跑一下上面的例子，看下结果。
-
-## 跑一下看一下结果
-
-一般来说JCStress是要用命令行跑的，但是这对于新手不友好，有些概念还需要理解一下，但是IDEA有专门为JCStress制作的插件，但这个插件并没有做到全版本的IDEA适配，目前适配的版本如下:
-
-> Aqua — 2023.1 (preview)
-
-> IntelliJ IDEA Educational — 2022.2 — 2022.2.2
-
-> IntelliJ IDEA Community — 2022.2 — 2023.1.2 (eap)
-
-> IntelliJ IDEA Ultimate — 2022.2 — 2023.1.2 (eap)
-
-> Android Studio — Flamingo | 2022.2.1 — Hedgehog | 2023.1.1 Canary 2
-
-本来这个插件跑的是好好的，但是我换了台机器就发现好像有点问题，还是用命令行吧，首先我们去GitHub将源码下载下来:
-
-```http
-https://github.com/openjdk/jcstress.git
-```
-
-编译JCStress这个项目的master分支最好是JDK 17，我试了其他版本，发现都会有点奇奇怪怪的问题，我们先不必深究这些问题，先跑出来结果再说. 首先我们在命令行执行：
-
-```java
-mvn clean install -DskipTests -T 1C
-```
-
-本篇的例子来自于JCStress tag中的0.3，但是跑JCStress测试的时候，发现0.3上好像有点水土不服，但提供的例子都是差不多，基本没变化。这里跑测试的时候，用的就是master分支下面的示例，我们来跑下示例:
-
-```java
-java -jar jcstress-samples/target/jcstress.jar -t API_01_Simple
-```
-
-![VZuzyU.jpeg](https://i.328888.xyz/2023/05/15/VZuzyU.jpeg)
-
-跑完测试之后，测试报告会会出现在results文件夹下面:
-
-![VZuGqy.jpeg](https://i.328888.xyz/2023/05/15/VZuGqy.jpeg)
-
-我们打开看下测试报告:
-
-![VZuKyE.jpeg](https://i.328888.xyz/2023/05/15/VZuKyE.jpeg)
-
-运行的次数比我们想象的要多，1877050次。
-
-## 例子解读
-
-### API_02_Arbiters
-
-Arbiter 意为冲裁。
-
-```java
-/*
-    Another flavor of the same test as APISample_01_Simple is using arbiters.
-    另一个和APISample_01_Simple一样味道的测试是使用仲裁者。
-    
-    Arbiters run after both actors, and therefore can observe the final result. 
-    Arbiters方法在actor方法运行之后执行,因此可以观察到最后的结果。
-
-	This allows to observe the permanent atomicity failure after both actors  finished.
-	在actor方法执行之后,Arbiters方法将会观察到原子性失败的结果	
-    How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t API_02_Arbiters
-        ...
-
-      RESULT         SAMPLES     FREQ       EXPECT  DESCRIPTION
-           1     888,569,404    6.37%  Interesting  One update lost: atomicity failure.
-           2  13,057,720,260   93.63%   Acceptable  Actors updated independently.
- */
-
 @JCStressTest
 
 // These are the test outcomes.
-@Outcome(id = "1", expect = ACCEPTABLE_INTERESTING, desc = "One update lost: atomicity failure.")
-@Outcome(id = "2", expect = ACCEPTABLE,             desc = "Actors updated independently.")
+@Outcome(id = "1, 1", expect = Expect.ACCEPTABLE, desc = "Both actors threw exception")
+@Outcome(id = "1, 0", expect = Expect.ACCEPTABLE, desc = "Only actor1 threw exception")
+@Outcome(id = "0, 1", expect = Expect.ACCEPTABLE, desc = "Only actor2 threw exception")
+@Outcome(id = "0, 0", expect = Expect.ACCEPTABLE, desc = "No exceptions")
+// This is a state object
 @State
-public class API_02_Arbiters {
+public class API_01_Simple {
 
-    int v;
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(1);
+
+    @Actor
+    public void actor1(II_Result r) {
+        atomicFixMemoryQueue.pushBack("11");
+        if (atomicFixMemoryQueue.getTail().get() > atomicFixMemoryQueue.size()) {
+            r.r1 = 1;
+        }
+    }
+
+    @Actor
+    public void actor2(II_Result r) {
+        atomicFixMemoryQueue.pushBack("11");
+        if (atomicFixMemoryQueue.getTail().get() > atomicFixMemoryQueue.size()) {
+            r.r2 = 1;
+        }
+    }
+}
+```
+
+于是心满意足的跑出来我想要的结果:
+
+![](https://a.a2k6.com/gerald/i/2024/07/07/1fo0tv.jpg)
+
+那怎么避免这种尾指针越界呢，于是再度想到了取余操作，如果尾指针再前进的过程中回到了头位置，那么说明已经到达数组的边界。于是我们就将源码改写如下:
+
+```java
+public boolean pushBack(T t) {
+    if (Objects.isNull(t)) {
+        throw new NullPointerException();
+    }
+    while (size.get() < capacity) {
+        int attempts = 0;
+        int currentTail = tail.get(); // 语句二
+        int nextTail = (currentTail + 1) % capacity;      
+        if (tail.compareAndSet(currentTail, nextTail)) { // 语句三
+            if (dataArray.compareAndSet(currentTail % capacity, null, t)) {
+                size.incrementAndGet(); // 语句一
+            }
+            return true;
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return false;
+}
+```
+
+我们接着跑上面的测试用例，看看这次会不会有尾指针的大小超过队列容量大小的问题。然后跑JCStress心满意足的没有跑出来尾指针大于队列容量的现象:
+
+![](https://a.a2k6.com/gerald/i/2024/07/14/7eva0.jpg)
+
+但是这个问题解决之后出现了新的问题，设A、B、C 三个线程同时进入while循环里面，此时队列容量为3，A线程将tail变为4，B读到tail为4，然后将tail来到0，此时队列的元素还没有线程消费，C读到语句tail = 0，然后tail = 1。这会导致出队问题，这是我的预测现在我们构造一个并发测试，来验证我们的猜想:
+
+```java
+@JCStressTest
+
+// These are the test outcomes.
+@Outcome(id = "1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0", expect = Expect.ACCEPTABLE, desc = "accept")
+@State
+public class API_01_Simple {
+   
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
+    
+    @Actor
+    public void actor1(I_Result r) {
+        atomicFixMemoryQueue.pushBack("1");
+        atomicFixMemoryQueue.pushBack("2");
+        atomicFixMemoryQueue.pushBack("3");
+        atomicFixMemoryQueue.pushBack("4");
+        atomicFixMemoryQueue.pushBack("5");
+        if (atomicFixMemoryQueue.getTail().get() > 0) {
+            r.r1 = 1;
+        }
+    }
+
+    @Actor
+    public void actor2(I_Result r) {
+        atomicFixMemoryQueue.pushBack("6");
+        atomicFixMemoryQueue.pushBack("7");
+        atomicFixMemoryQueue.pushBack("8");
+        atomicFixMemoryQueue.pushBack("9");
+        atomicFixMemoryQueue.pushBack("10");
+        if (atomicFixMemoryQueue.getTail().get() > 0) {
+            r.r1 = 1;
+        }
+    }
+}
+```
+
+所以这里应当是先在对应的位置上写值，在移动尾指针。
+
+```java
+public boolean pushBack(T t) {
+    if (Objects.isNull(t)) {
+        throw new NullPointerException();
+    }
+    while (size.get() < capacity) {
+        int attempts = 0;
+        int currentTail = tail.get();
+        int nextTail = (currentTail + 1) % capacity;
+        if (dataArray.compareAndSet(currentTail, null, t)) {
+             tail.compareAndSet(currentTail, nextTail)        
+             size.incrementAndGet();
+		     return true;		                        
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return false;
+}
+```
+
+我们现在再跑一下测试看看会不会出现尾指针异常前移的情况:
+
+![](https://a.a2k6.com/gerald/i/2024/07/20/5mam5.jpg)
+
+到现在为止我们都是单独的跑入队方法，现在考虑入队和出队并发，仅考虑pushBack和pushFront方法，pushBack方法在移动尾指针，popFront在移动头指针，一个我们需要预防的场景就是出队方法超过了入队方法，也就是出队速度超过了入队速度，得到了空值。测试代码如下:
+
+```java
+@JCStressTest
+@Outcome(id = "1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0", expect = Expect.ACCEPTABLE, desc = "accept")
+@State
+public class API_01_Simple02 {
+
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
 
     @Actor
     public void actor1() {
-        v++;
+        atomicFixMemoryQueue.pushBack("1");
+    }
+
+    @Actor
+    public void actor3() {
+        atomicFixMemoryQueue.pushBack("1");
     }
 
     @Actor
     public void actor2() {
-        v++;
+        atomicFixMemoryQueue.popFront();
+    }
+
+    @Actor
+    public void actor5() {
+        atomicFixMemoryQueue.popFront();
+    }
+
+    @Actor
+    public void actor4() {
+        atomicFixMemoryQueue.popFront();
     }
 
     @Arbiter
     public void arbiter(I_Result r) {
-        r.r1 = v;
-    }
-}
-```
-
-### API_03_Termination
-
-```java
-/*
-    Some concurrency tests are not following the "run continously" pattern.
-    一些并发测试可能并不适用"持续运行"模式。
-    One of interesting test groups is that asserts if the code had terminated after a signal.
-    一个有趣的测试是确定代码是否在接收到信号之后终止
-    Here, we use a single @Actor that busy-waits on a field, and a @Signal that
-    sets that field.
-    在下面的例子中，我们使用@Actor来让一个线程在一个字段上忙等，然后用@Signal方法去设置这个字段。
-    JCStress would start actor, and then deliver the signal.
-    JCStress会首先启动actor，然后启动signal.
-    If it exits in reasonable time, it will record "TERMINATED" result, otherwise
-    record "STALE".
-    如果在一定的时间退出，它将会记录"TERMINATED",否则将会记录state。
-    How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t API_03_Termination
-
-        ...
-
-          RESULT  SAMPLES     FREQ       EXPECT  DESCRIPTION
-           STALE        1   <0.01%  Interesting  Test hung up.
-      TERMINATED   13,168   99.99%   Acceptable  Gracefully finished.
-
-      Messages:
-        Have stale threads, forcing VM to exit for proper cleanup.
- */
-
-@JCStressTest(Mode.Termination)
-@Outcome(id = "TERMINATED", expect = ACCEPTABLE,             desc = "Gracefully finished.")
-@Outcome(id = "STALE",      expect = ACCEPTABLE_INTERESTING, desc = "Test hung up.")
-@State
-public class API_03_Termination {
-
-    @Actor
-    public void actor1() throws InterruptedException {
-        synchronized (this) {
-            wait();
-        }
-    }
-
-    @Signal
-    public void signal() {
-        synchronized (this) {
-            notify();
+        if (atomicFixMemoryQueue.getHead().get() > atomicFixMemoryQueue.getTail().get()) {
+            r.r1 = 1;
         }
     }
 }
 ```
 
-这里我们不认识的也就是  @Signal，我们看下这个类上的注释:
+
+
+![](https://a.a2k6.com/gerald/i/2024/07/20/5p3hs.jpg)
+
+果真跑出来了越界，于是我们就需要浅浅的对出队方法进行改造，如果头指针和尾指针在一个位置，这就有点像一个环了。
+
+![](https://a.a2k6.com/gerald/i/2024/07/20/ujm1.jpg)
+
+到现在好像一切都很好，但我还是有些不放心，于是还是想系统的跑一下测试。
+
+## 测试样例总结
+
+###  不能丢值
+
+设队列大小为n，x个线程入队操作，x < n, 则队列大小应当为x， 不能小于x。测试用例如下:
 
 ```java
-/**
- * {@link Signal} is useful for delivering a termination signal to {@link Actor}  in {@link Mode#Termination} tests.
- * Signal 被用于 在中断测试中发送中断信号给Actor。
- *  It will run after {@link Actor} in question  started executing.
- *  它将会在相应的Actor运行之后开始执行。
- */
-@Target(ElementType.METHOD)
-@Retention(RetentionPolicy.RUNTIME)
-public @interface Signal {
-}
-
-```
-
-### API_04_Nesting
-
-```java
-/*
-It is sometimes convenient to put the tests in the same source file for better comparison. JCStress allows to nest tests like this:
-有时候将一些测试放入一个源文件可以更好的比较，JCStress允许将下面一样嵌套
-
-    How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t API_04_Nesting
-
-        ...
-
-        .......... [OK] org.openjdk.jcstress.samples.api.APISample_04_Nesting.PlainTest
-
-          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
-            1, 1   21,965,585    4.5%  Interesting  Both actors came up with the same value: atomicity failure.
-            1, 2  229,978,309   47.5%   Acceptable  actor1 incremented, then actor2.
-            2, 1  232,647,044   48.0%   Acceptable  actor2 incremented, then actor1.
-
-        .......... [OK] org.openjdk.jcstress.samples.api.APISample_04_Nesting.VolatileTest
-
-          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
-            1, 1    4,612,990    1.4%  Interesting  Both actors came up with the same value: atomicity failure.
-            1, 2   95,520,678   28.4%   Acceptable  actor1 incremented, then actor2.
-            2, 1  236,498,350   70.3%   Acceptable  actor2 incremented, then actor1.
- */
-
-public class API_04_Nesting {
-
-    @JCStressTest
-    @Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
-    @Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
-    @Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
-    @State
-    public static class PlainTest {
-        int v;
-
-        @Actor
-        public void actor1(II_Result r) {
-            r.r1 = ++v;
-        }
-
-        @Actor
-        public void actor2(II_Result r) {
-            r.r2 = ++v;
-        }
-    }
-
-    @JCStressTest
-    @Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
-    @Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
-    @Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
-    @State
-    public static class VolatileTest {
-        volatile int v;
-
-        @Actor
-        public void actor1(II_Result r) {
-            r.r1 = ++v;
-        }
-
-        @Actor
-        public void actor2(II_Result r) {
-            r.r2 = ++v;
-        }
-    }
-}
-```
-
-### API_05_SharedMetadata
-
-```java
-/*
-    In many cases, tests share the outcomes and other metadata. To common them,
-    there is a special @JCStressMeta annotation that says to look up the metadata
-    at another class.
-    在一些情况下，测试需要共享输出结果和其他元数据，为了共享他们,有一个特殊的注解@JCStressMeta来指示其他类在另一个类里面查找元数据。
-    How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t API_05_SharedMetadata
-
-        ...
-
-        .......... [OK] org.openjdk.jcstress.samples.api.APISample_05_SharedMetadata.PlainTest
-
-          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
-            1, 1    6,549,293    1.4%  Interesting  Both actors came up with the same value: atomicity failure.
-            1, 2  414,490,076   90.0%   Acceptable  actor1 incremented, then actor2.
-            2, 1   39,540,969    8.6%   Acceptable  actor2 incremented, then actor1.
-
-        .......... [OK] org.openjdk.jcstress.samples.api.APISample_05_SharedMetadata.VolatileTest
-
-          RESULT      SAMPLES    FREQ       EXPECT  DESCRIPTION
-            1, 1   15,718,942    6.1%  Interesting  Both actors came up with the same value: atomicity failure.
-            1, 2  120,855,601   47.2%   Acceptable  actor1 incremented, then actor2.
-            2, 1  119,393,635   46.6%   Acceptable  actor2 incremented, then actor1.
- */
-
-@Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
-@Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
-@Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
-public class API_05_SharedMetadata {
-
-    @JCStressTest
-    @JCStressMeta(API_05_SharedMetadata.class)
-    @State
-    public static class PlainTest {
-        int v;
-
-        @Actor
-        public void actor1(II_Result r) {
-            r.r1 = ++v;
-        }
-
-        @Actor
-        public void actor2(II_Result r) {
-            r.r2 = ++v;
-        }
-    }
-
-    @JCStressTest
-    @JCStressMeta(API_05_SharedMetadata.class)
-    @State
-    public static class VolatileTest {
-        volatile int v;
-
-        @Actor
-        public void actor1(II_Result r) {
-            r.r1 = ++v;
-        }
-
-        @Actor
-        public void actor2(II_Result r) {
-            r.r2 = ++v;
-        }
-    }
-}
-```
-
-我们首先来看一下 @JCStressMeta这个注解: 
-
-```java
-/**
- * {@link JCStressMeta} points to another class with test meta-information.
- *	@JCStressMeta注解将指向另一个包含测试元信息的类。
- * <p>When placed over {@link JCStressTest} class, the {@link Description}, {@link Outcome},
- * {@link Ref}, and other annotations will be inherited from the pointed class. This allows
- * to declare the description, grading and references only once for a group of tests.</p>
- *  JCStressMeta 
- * 当它和@JCStressTest一起出现，@Description、@Outcome、@Ref等其他注解将会从指向的类继承。这样就可以在一组测试中只声明一次描* 述、评分和参考信息
- */
-@Target(ElementType.TYPE)
-@Retention(RetentionPolicy.RUNTIME)
-public @interface JCStressMeta {
-
-    Class value();
-
-}
-```
-
-### API_06_Descriptions
-
-```java
-/*
-    JCStress also allows to put the descriptions and references right at the test.
-    This helps to identify the goal for the test, as well as the discussions about
-    the behavior in question.
-	JCStress 还允许将引用和描述放入测试中,这将帮我们认清测试目标, 以及相关问题的讨论
-    How to run this test:
-       $ java -jar jcstress-samples/target/jcstress.jar -t API_06_Descriptions
- */
-
 @JCStressTest
-
-// Optional test description
-@Description("Sample Hello World test")
-
-// Optional references. @Ref is repeatable.
-@Ref("http://openjdk.java.net/projects/code-tools/jcstress/")
-
-@Outcome(id = "1, 1", expect = ACCEPTABLE_INTERESTING, desc = "Both actors came up with the same value: atomicity failure.")
-@Outcome(id = "1, 2", expect = ACCEPTABLE,             desc = "actor1 incremented, then actor2.")
-@Outcome(id = "2, 1", expect = ACCEPTABLE,             desc = "actor2 incremented, then actor1.")
+@Outcome(id = "1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0", expect = Expect.ACCEPTABLE, desc = "accept")
 @State
-public class API_06_Descriptions {
+public class API01Simple03 {
 
-    int v;
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
 
     @Actor
-    public void actor1(II_Result r) {
-        r.r1 = ++v;
+    public void actor1() {
+        atomicFixMemoryQueue.pushBack("1");
     }
 
     @Actor
-    public void actor2(II_Result r) {
-        r.r2 = ++v;
+    public void actor2() {
+        atomicFixMemoryQueue.pushBack("2");
+    }
+
+    @Actor
+    public void actor3() {
+        atomicFixMemoryQueue.pushBack("3");
+    }
+
+    @Actor
+    public void actor4() {
+        atomicFixMemoryQueue.pushBack("4");
+    }
+
+    @Arbiter
+    public void arbiter(I_Result r) {
+        if (atomicFixMemoryQueue.size() < 4) {
+            r.r1 = 1;
+        }
+        List<String> list = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            list.add(atomicFixMemoryQueue.popFront());
+        }
+        Collections.sort(list, String::compareTo);
+        if (!Joiner.on(",").join(list).equals("1,2,3,4")) {
+            r.r1 = 1;
+        }
     }
 }
 ```
 
-## 总结一下
+![](https://a.a2k6.com/gerald/i/2024/07/20/mpj.jpg)
 
-本篇我们介绍的JCStress注解有:
+### 不能让调用方出现异常打断执行
 
-- @JCStressTest  标定这个类需要被JCStress测试
-- 输入参数 II_Result 用于记录测试结果 ，这个类型的结果几个I，就是由几个变量，记录的结果最后会被用逗号拼接，然后和outcome注解的id来匹配。
-- Outcome 的id属性用于设置我们希望测出来的结果，expect 用于标定测试等级。
-- @Actor 标定的方法 会被一个线程执行，只有类上出现了@State，类上的方法才可以允许出现@Actor注解。
--  @Arbiter 在actor方法之后执行
-- @Signal 被用于在中断测试中发送中断信号给Actor。
-- 你也可以将一些测试放在一个类中
-- 有的时候 你想做的并发测试，预期输出结果都一样，我们可以用@JCStressMeta注解，共享属性。
-- 有的时候我们也想和别人讨论并发问题，并希望在测试输出的文档中附带参考链接和描述，我们可以用@Ref和@Description。
+```java
+@JCStressTest
+@Outcome(id = "1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0", expect = Expect.ACCEPTABLE, desc = "accept")
+@State
+public class API01Simple04 {
+
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
+
+    @Actor
+    public void actor1(I_Result i_result) {
+        try {
+            for (int i = 0; i < 10; i++) {
+                atomicFixMemoryQueue.pushBack("1");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            i_result.r1 = 1;
+        }
+    }
+
+    @Actor
+    public void actor2(I_Result i_result) {
+        try {
+            for (int i = 0; i < 10; i++) {
+                atomicFixMemoryQueue.popFront();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            i_result.r1 = 1;
+        }
+    }
+}
+```
+
+然后跑出来了异常：
+
+![](https://a.a2k6.com/gerald/i/2024/07/20/4pbo.jpg)
+
+现在代码肯定是有问题的，我们接着来看popFront方法:
+
+```java
+public T popFront() {
+    while (size.get() > 0) {
+        int headIndex = head.get();
+        int tailIndex = tail.get();
+        if (headIndex == tailIndex){
+            return null;
+        }
+        int attempts = 0;
+        if (head.compareAndSet(headIndex, headIndex + 1)) { // 语句一
+            size.decrementAndGet();
+            T result = dataArray.get(headIndex);
+            dataArray.compareAndSet(headIndex,result,null);
+            return result;
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return null;
+}
+```
+
+我觉得问题应该出现在语句一上面，设队列只剩最后一个元素，也就是headIndex = 3， A线程进来完成自增，头指针为4，B线程进来将头指针变为5，于是就出现了数组下标越界，现在让我们对popFront进行改造:
+
+```java
+ public T popFront() {
+        while (size.get() > 0) {
+            int headIndex = head.get();
+            int tailIndex = tail.get();
+            if (headIndex == tailIndex) {
+                return null;
+            }
+            int next = headIndex++ % capacity;
+            int attempts = 0;
+            T result = dataArray.getAcquire(next);
+            if (Objects.isNull(result)) {
+                return null;
+            }
+            if (dataArray.compareAndSet(next, result, null)) {
+                if (head.compareAndSet(next, headIndex)) {
+                    size.decrementAndGet();
+                    return result;
+                }
+
+            } else {
+                backOff(++attempts);
+            }
+        }
+        return null;
+    }
+```
+
+然后结果正常。
+
+###  队列里面不能存储空值
+
+```java
+@JCStressTest
+@Outcome(id = "1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0", expect = Expect.ACCEPTABLE, desc = "accept")
+@State
+public class API01Simple05 {
+
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
+
+    @Actor
+    public void actor1(I_Result i_result) {
+        for (int i = 0; i < 10; i++) {
+            atomicFixMemoryQueue.pushBack("1");
+        }
+    }
+
+    @Actor
+    public void actor2(I_Result i_result) {
+        for (int i = 0; i < 10; i++) {
+            atomicFixMemoryQueue.popFront();
+        }
+    }
+
+    @Arbiter
+    public void arbiter(I_Result r) {
+        int size = atomicFixMemoryQueue.size();
+        if (size > 0) {
+            for (int i = 0; i < size; i++) {
+                if (atomicFixMemoryQueue.popFront() == null) {
+                    r.r1 = 1;
+                }
+            }
+        }
+    }
+}
+```
+
+跑出来结果如下:
+
+```java
+  RESULT      SAMPLES     FREQ      EXPECT  DESCRIPTION
+       0      215,268    0.20%  Acceptable  accept
+       1  108,928,796   99.80%  Acceptable  accept
+
+```
+
+那也就是说size的大小是不正确的，跑出这个结果的时候，我的脑袋中开始不断构造场景，去模拟怎样的场景，这是一种思维方式，但是怎么都构造不出来，我在吃饭的时候，换到了另一种思维方式，由结果翻过来推原因，如果size大于0，但是出队元素为空，只说明一点，就是size的大小没有被正常增减。我们重新写一下测试用例，然后看下结果:
+
+```java
+@JCStressTest
+@Outcome(id = "1, 0, 1, 1, 1, 1", expect = Expect.ACCEPTABLE, desc = "accept")
+@Outcome(id = "0, 1, 1, 1, 1, 1", expect = Expect.ACCEPTABLE, desc = "accept")
+@State
+public class API01Simple05 {
+
+    AtomicFixMemoryQueue<String> atomicFixMemoryQueue = new AtomicFixMemoryQueue<>(5);
+
+    @Actor
+    public void actor1() {
+        for (int i = 0; i < 10; i++) {
+            atomicFixMemoryQueue.pushBack("1");
+        }
+    }
+
+    @Actor
+    public void actor2( ) {
+        for (int i = 0; i < 10; i++) {
+            atomicFixMemoryQueue.popFront();
+        }
+    }
+
+    @Arbiter
+    public void arbiter(IIIIII_Result r) {
+        int size = atomicFixMemoryQueue.size();
+        r.r1 = atomicFixMemoryQueue.getTail().get();
+        r.r2 = atomicFixMemoryQueue.getHead().get();
+        r.r3 = size;
+        int notNullTotal = 0;
+        int nullTotal = 0;
+        if (size > 0) {
+            for (int i = 0; i < size; i++) {
+                if (atomicFixMemoryQueue.popFront() == null) {
+                    nullTotal++;
+                }else{
+                    notNullTotal++;
+                }
+            }
+        }
+        // 说明有null,也有非空
+        if (notNullTotal < size){
+            r.r4 = 1;
+        }else {
+            r.r6 = 1;
+        }
+        // 说明全出队了，size大小没有正常递减
+        if (nullTotal == size){
+            r.r5 = 1;
+        }
+    }
+}
+```
+
+观测结果为:
+
+```shell
+  0, 0, 0, 0, 1, 1     435,104    0.64%   Forbidden  No default case provided, assume Forbidden // size = 0 正常结果
+  0, 0, 5, 1, 1, 0  66,980,001   98.31%   Forbidden  No default case provided, assume Forbidden // size = 5， 出队为Null
+
+  0, 1, 4, 0, 0, 1      44,223    0.06%   Forbidden  No default case provided, assume Forbidden // size = 4 , 不为空的元素和size 相
+  1, 1, 0, 0, 1, 1      67,035    0.10%   Forbidden  No default case provided, assume Forbidden  // size =0 正常结果
+  1, 1, 5, 1, 1, 0      34,724    0.05%   Forbidden  No default case provided, assume Forbidden // size = 5 出队全为null
+  1, 2, 4, 0, 0, 1         451   <0.01%   Forbidden  No default case provided, assume Forbidden //  size = 4  不为空的元素和size 相等
+  2, 2, 0, 0, 1, 1      81,064    0.12%   Forbidden  No default case provided, assume Forbidden // size = 0  正常结果
+  4, 4, 5, 1, 1, 0      49,935    0.07%   Forbidden  No default case provided, assume Forbidden  //  size = 4  不为空的元素和size 相等
+```
+
+现在来看都属于size大于0，但是出队的时候全为空，我们接着把popFront方法拿出来看一下:
+
+```java
+public T popFront() {
+    while (size.get() > 0) {
+        int headIndex = head.get();
+        int tailIndex = tail.get();
+        if (headIndex == tailIndex) {
+            return null;
+        }
+        int next = (headIndex + 1) % capacity;
+        int attempts = 0;
+        T result = dataArray.getAcquire(headIndex);
+        if (Objects.isNull(result)) {
+            return null;
+        }
+        if (dataArray.compareAndSet(headIndex, result, null)) { //语句二
+            if (head.compareAndSet(headIndex, next)) { // 语句三
+                size.decrementAndGet(); // 语句四
+            }
+            return result;
+        } else {
+            backOff(++attempts);
+        }
+    }
+    return null;
+}
+```
+
+这意味着语句一在正常执行之后，也就是语句二在某些情况下失败，导致语句三没有正常执行，那是怎样的情况呢?    注意观察我们的测试用例，入队的都是相同元素，设队列大小为3，存储的都为1,1,1。设A线程进入获取头指针为0，然后将0位置设置为null，在执行语句二的时候，B线程进入获取head = 0，然后走到语句二的时候，线程C执行写入，将0位置写入元素1，于是语句二执行成功，但是语句三执行失败，这就导致少递减了一次。如下图所示:
+
+![](https://a.a2k6.com/gerald/i/2024/07/21/655gs.jpg)
+
+
+
+于是我将代码修改为:
+
+```java
+public T popFront() {
+    while (true) {
+        if (size.get() == 0) {
+            return null;
+        }
+        int headIndex = head.get();
+        int tailIndex = tail.get();
+        if (headIndex == tailIndex) {
+            return null;
+        }
+        int next = (headIndex + 1) % capacity;
+        int attempts = 0;
+        T result = dataArray.getAcquire(headIndex);
+        if (Objects.isNull(result)) {
+            return null;
+        }
+        if (dataArray.compareAndSet(headIndex, result, null)) { // 语句一
+            size.decrementAndGet(); // 语句二
+            head.compareAndSet(headIndex, next);
+        } else {
+            backOff(++attempts);
+        }
+    }
+}
+```
+
+也就是只要写值成功，一定会递减队列大小。还是跑出来了下面这个结果:
+
+```
+0, 0, 5, 1, 1, 0  64,171,193   96.34%   
+```
+
+我们仔细想语句二，在考虑入队方法:
+
+```java
+  public boolean pushBack(T t) {
+        if (Objects.isNull(t)) {
+            throw new NullPointerException();
+        }
+        while (size.get() < capacity) {
+            int attempts = 0;
+            int currentTail = tail.get();
+            int nextTail = (currentTail + 1) % capacity;
+            if (dataArray.compareAndSet(currentTail, null, t)) {
+                size.incrementAndGet(); // 语句三
+                tail.compareAndSet(currentTail, nextTail);
+                return true;
+            } else {
+                backOff(++attempts);
+            }
+        }
+        return false;
+    }
+```
+
+这里考虑入队和出队并行，设队列容量为5，现在tail指针指向3，此时head指针指向0。设A线程接着入队，入队完成之后，还没完成size自增，然后出队方法开始执行size--。
+
+
 
 ## 写在最后
 
-这个框架倒是我头一次只看官方文档，根据例子写的教程，探索的过程倒是摔了不少跟头，刚开始不想用命令行，想用IDEA的一个插件JCStress来跑，换了一台电脑之后，发现这个插件有点水土不服，本来想看下问题出在哪里，但是想想要花不少的时间，这个想法也就打消了。其实本篇还打算介绍一下线程中断机制，但是感觉这个内容一篇之内也介绍不完，所性也砍了，本来想解读测试报告的时候，把JCStress的执行机制也顺带介绍一下，Java的两个编译器C1、C2。但是刚敲几个字就发现也是不小的篇幅，所性也砍了。后面我们介绍JMM，将用JCStress来验证我们的猜想。
+在Java里面基于数组线程安全的队列有ArrayBlockingQueue、Disruptor、MpscQueue(来自JCTools)， ArrayBlockingQueue通过加锁来实现线程安全。Disruptor和MpscQueue通过原子操作来实现线程安全，MpscQueue适用于多生产者单消费者，而Disruptor相对更灵活一些，可以指定等待策略：
 
+- BlockingWaitStrategy: 锁和条件变量实现的等待
+- SleepingWaitStrategy:  自旋 + yield + sleep
+- YieldingWaitStrategy: 自旋 +  yield +自旋
+- BusySpinWaitStrategy： 自旋
 
+Disruptor有更加灵活的消费者模式，支持单生产者、多生产者，单消费者、多消费者。Apache Storm、Camel、Log4j 2在内的很多知名项目都应用了Disruptor以获取高性能。写本篇文章的时候，我没有选择一开始告诉正确的答案，我选择的方案是演进式的，原因在于在构造过程中出错是正常的事情，有了错误才明白为什么对。有时候是这样，你必须先有一个错误的答案，才知道正确的答案在哪里。
+
+一点点思考模型纠正，
 
 
 
 ## 参考资料
 
-[1] Difference between pre-increment and post-increment in a loop?  https://stackoverflow.com/questions/484462/difference-between-pre-increment-and-post-increment-in-a-loop
+[1] LMAX Disruptor: High performance alternative to bounded queues for exchanging data between concurrent threads   https://lmax-exchange.github.io/disruptor/disruptor.html
 
-[2] Why is i++ not atomic?  https://stackoverflow.com/questions/25168062/why-is-i-not-atomic
+[2] MySQL事务学习笔记(二) 相识篇 https://juejin.cn/post/7074171192508153892#heading-4
 
+[3]  onSpinWait() method of Thread class - Java 9   https://stackoverflow.com/questions/44622384/onspinwait-method-of-thread-class-java-9 
 
-
+[4] JMM测试利器-JCStress学习笔记  https://juejin.cn/post/7233359844974952485?searchId=20240720142027F610C3F02973D1D480A1
