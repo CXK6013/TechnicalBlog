@@ -1,6 +1,8 @@
-# 重学RocketMQ之深化理解与实践思考(一)  架构与消息
+# RocketMQ漫谈之从消息队列到事务消息
 
 [TOC]
+
+> 当我书写的时候，我的痛苦从我的心里通过血液流淌到我书写的文字上。
 
 ## 引言
 
@@ -200,7 +202,7 @@ private native int socketRead0(FileDescriptor fd,byte b[], int off, int len,int 
 >
 > 如果传输系统中的缓冲区不够保存要传输的数据，则send将被阻塞，除非socket非阻塞模式。
 
-也就是说在Java层面write调用只是将数据发送到操作系统的缓冲区，下面发送数据的重传、拥塞控制都由操作系统来接管，这部分相对不可控，如果传输的数据过多，打断传输，事实上一部分数据传了一半，这会造成数据的不完整，所以基于这种设计write调用没有给超时参数。我们接着思考TCP是全双工的，也就是说TCP连接建立的时候，数据传输过去，我们在大部分情况下可以信任这个结果，在RocketMQ里面发送消息，服务端会返回结果给客户端，消息的结果有:
+也就是说在Java层面write调用只是将数据发送到操作系统的缓冲区，下面发送数据的重传、拥塞控制都由操作系统来接管，这部分相对不可控，如果传输的数据过多，传输过程中被打断，事实上一部分数据传了一半，这会造成数据的不完整，所以基于这种设计write调用没有给超时参数。我们接着思考TCP是全双工的，也就是说TCP连接建立的时候，数据传输过去，我们在大部分情况下可以信任这个结果，在RocketMQ里面发送消息，服务端会返回结果给客户端，消息的结果有:
 
 - SEND_OK :  消息发送成功。要注意的是消息发送成功也不意味着它是可靠的。要确保不会丢失任何消息，还应启用同步Master服务器或同步刷盘，即SYNC_MASTER或SYNC_FLUSH。
 - FLUSH_DISK_TIMEOUT: 消息发送成功但是服务器刷盘超时。此时消息已经进入服务器队列（内存），只有服务器宕机，消息才会丢失。消息存储配置参数中可以设置刷盘方式和同步刷盘时间长度
@@ -270,7 +272,7 @@ public class TransactionMsgListener implements RocketMQLocalTransactionListener 
 
 
 
-- 初始化:  办事务消息被生产者构建并完成初始化，待发送到服务端的状态。
+- 初始化:  半事务消息被生产者构建并完成初始化，待发送到服务端的状态。
 
 - 事务阶段
 
@@ -283,15 +285,17 @@ public class TransactionMsgListener implements RocketMQLocalTransactionListener 
 - 消息提交: 消费者完成消息处理，并向服务端提交消费结果，服务端标记当前消费已被处理(包括消费成功和失败)。 消息在保存时间到期或存储空间不足被删除前，消费者仍然可以回溯消息重新消费。
 - 消息删除: RocketMQ按照消息保存机制滚动清理最早的消息数据，将消息从物理文件中删除。
 
-我们学习新事物或者新技术，总是先找特性最少得，与我们旧有的知识关联上，一种学习思维是在学习RocketMQ的时候，我们可以先学最普通的消息，然后再学习事务消息，延时消息、顺序消息，这其实也就是找不同，他们身上不同的点就是应用于不同的场景。另一种学习思维是我们走演绎式思维，从普通消息结合实际场景推导到我们想要什么样的消息的生产消费流程，最终得到RocketMQ中的事务消息，这两种思维可以互补，演绎式思维明确设计思路，明确设计思路的过程也就是明确使用场景的过程，找不同有时候也会疑惑为什么要这样设计，为什么要多一步回查这个过程。我们在《当数组遇上队列: Java线程安全实现详解(一)》提到这样一种思维:
+我们学习新事物或者新技术，总是先找特性最少得，与我们旧有的知识关联上，一种学习思维是在学习RocketMQ的时候，我们可以先学最普通的消息，然后再学习事务消息，延时消息、顺序消息，这其实也就是找不同，他们身上不同的点就是应用于不同的场景。
 
-> 当你养成一种分析问题、琢磨文章的习惯之后，日积月累；你便会感到复杂的东西也是由少数几个大的部分组成的。这些部分出现的原因和它们之间的相互关系也是可以理解的。与此同时，由于读的东西多了，运算的技巧也高了，你会发现，一些复杂的推演过程大部分是由某些必然的步骤所组成，就比较容易抓住新的关键性的部分 ---  越民义\
+ 经常会有些文章标题有了什么，为什么还要有，在我看来这就是在找另一种东西的诞生的动机，找不同点，找另一种技术的适应场景。另一种学习思维是我们走演绎式思维，从普通消息结合实际场景推导到我们想要什么样的消息的生产消费流程，最终得到RocketMQ中的事务消息，这两种思维可以互补，演绎式思维明确设计思路，明确设计思路的过程也就是明确使用场景的过程，找不同有时候也会疑惑为什么要这样设计，为什么要多一步回查这个过程。我们在《当数组遇上队列: Java线程安全实现详解(一)》提到这样一种思维:
+
+> 当你养成一种分析问题、琢磨文章的习惯之后，日积月累；你便会感到复杂的东西也是由少数几个大的部分组成的。这些部分出现的原因和它们之间的相互关系也是可以理解的。与此同时，由于读的东西多了，运算的技巧也高了，你会发现，一些复杂的推演过程大部分是由某些必然的步骤所组成，就比较容易抓住新的关键性的部分 ---  越民义
 
 我们分解RocketMQ事务消息的设计思路也就是为了解决网络不可靠，要引入回查，而网络不能保证绝对可靠，为了避免网络抖动，这里就需要定时回查，分解RocketMq组成也就是半消息+定时器。
 
 回忆一下，我们在《RocketMQ学习笔记(二)相识篇》中讲事务消息的时候，讲的太过粗陋，说粗陋是因为虽然也考虑到了网络抖动，发送二次确认可能收不到，但是没有结合业务场景和普通消息的比较，也就是理论和实践结合的不够充分，就会认识不深刻。
 
-##  延时消息
+###  延时消息
 
 所谓延时消息也就是消息在到达RocketMQ之后，等待一段时间才能被消费者消费的消息，相当朴实无华，一个典型的场景就是订单下单之后未支付，在一定时间内关闭订单，我们就可以使用延迟消息来处理对应的场景，RocketMQ的场景的使用建议是避免大量相同定时时刻的消息，定时消息的实现逻辑需要先经过定时存储等待触发，定时时间到达后才会被投递给消费者。因此，如果将大量定时消息的定时时间设置为同一时刻，则到达该时刻后会有大量消息同时需要被处理，会造成系统压力过大，导致消息分发延迟，影响定时精度。RocketMQ 在5.0 之后支持任意精度的延迟消息，在5.0之前只支持18个等级的延迟投递:
 
@@ -331,147 +335,21 @@ rocketMQTemplate.syncSendDelayTimeSeconds("transation-order",MessageBuilder.with
 
 ## 消费模式
 
+在RocketMQ的领域模型中，同一个消息支持被多个消费者分组订阅，，每个消费者可消费到消费者分组内所有的消息，各消费者分组都订阅相同的消息，这在RocketMQ中被称为广播。
 
+![](https://a.a2k6.com/gerald/i/2024/09/01/76fff.jpg)
 
+同时，对于每个消费者分组可以初始化多个消费者，这些消费者共同分担消费者分组内的所有消息，实现消费者分组内流量的水平拆分和均衡负载。
 
+![](https://a.a2k6.com/gerald/i/2024/09/01/78y7y.jpg)
 
+## 总结一下
 
+本文属于重学RocketMQ的第一篇，本来这篇还揉进了持久化的概念，但想来持久化的内容比我想象的要多，所幸就分拆出去了，我们本篇从消息队列这个名词讲起，队列具备先进先出这个特点，RocketMQ按照进入队列的顺序写入存储，消息队列表达的另一种语义是生产者消费模型，生产者将消息放入队列中，消费者消费消息，在RocketMQ中存储消息的角色被称为broker，而broker可以集群，为了实现生产者和broker解耦，RocketMQ引入了NameServer，生产者通过NameServer路由到broker中，消费者通过NameServer进行消费。这也就是RocketMQ的结构，所谓结构也就是组成和联系，RocketMQ由几个部分组成，这几个部分之间的联系，就像是水和面，做成了大饼，糅合烤制的过程就是将水和面之间建立联系。
 
-## 从刷盘到零拷贝
+然后我们从最普通的普通消息入手，讲了普通消息的周期，有讲了RocketMQ的发送方式，单向发送和异步发送，在这个基础上我们使用了演绎式思维，先是在网络无法保证绝对可靠的基础上进行推导，也就是说在发送的时候报超时异常，我们无法确认消息是否被成功投递，于是为了追求更高的可靠性，我们引入了反查机制，也就是说这种类型的消息在到达消息队列的时候，对消费者不可见，随后就会执行本地事务，如果这里提交了，那么这条消息对消费者就是可见的，如果回查这个过程也发生了异常，由于网络抖动发生的异常，那么RocketMQ会主动回查，这也就是事务消息的设计思路。
 
-上面我们讲到了刷盘，也就将数据从内存刷新到磁盘上，也就是持久化，提到持久化这里想到了Redis的持久化，MySQL的持久化。我想到了字节流和字符流、FileInputStream、FileOutputStream、BufferedOutputStream、BufferedInputStream、零拷贝。
-
-程序使用字节进行读取和写入的就是字节流，常见的就有FileInputStream、FileOutputStream。所有的字节流都继承自 InputStream and OutputStream。一般我们向文件里面写内容，使用的是FileOutputStream的write方法:
-
-```java
-public void write(byte b[])
-```
-
-然后write方法底层是一个native调用:
-
-```java
-private native void writeBytes(byte b[], int off, int len, boolean append)
-```
-
- 在OpenJDK的FileOutputStream_md.c我们可以看到对应的调用:
-
-```c
-JNIEXPORT void JNICALL
-Java_java_io_FileOutputStream_writeBytes(JNIEnv *env,
-    jobject this, jbyteArray bytes, jint off, jint len, jboolean append) {
-    writeBytes(env, this, bytes, off, len, append, fos_fd);
-}
-```
-
-在io_util.c可以看到对应的writeByes调用
-
-```java
-void
-writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
-           jint off, jint len, jboolean append, jfieldID fid)
-{	// 省略无关代码调用
-    if (!(*env)->ExceptionOccurred(env)) {
-  
-            if (append == JNI_TRUE) {
-                n = IO_Append(fd, buf+off, len);
-            } else {
-                n = IO_Write(fd, buf+off, len);
-            }       
-            off += n;
-            len -= n;
-        }
-    }
-    if (buf != stackBuf) {
-        free(buf);
-    }
-}
-```
-
-这里的IO_write是一个宏，在io_util_md.h里面可以看到对应的宏定义:
-
-```c
-#define IO_Write handleWrite
-```
-
-在io_util_md.h我们可以看到handleWrite的定义:
-
-```c
-JNIEXPORT
-jint handleWrite(jlong fd, const void *buf, jint len) {
-    return writeInternal(fd, buf, len, JNI_FALSE);
-}
-static jint writeInternal(jlong fd, const void *buf, jint len, jboolean append)
-{
-    BOOL result = 0;
-    DWORD written = 0;
-    HANDLE h = (HANDLE)fd;
-    if (h != INVALID_HANDLE_VALUE) {
-        OVERLAPPED ov;
-        LPOVERLAPPED lpOv;
-        if (append == JNI_TRUE) {
-            ov.Offset = (DWORD)0xFFFFFFFF;
-            ov.OffsetHigh = (DWORD)0xFFFFFFFF;
-            ov.hEvent = NULL;
-            lpOv = &ov;
-        } else {
-            lpOv = NULL;
-        }
-        // 
-        result = WriteFile(h,                /* File handle to write */
-                           buf,              /* pointers to the buffers */
-                           len,              /* number of bytes to write */
-                           &written,         /* receives number of bytes written */
-                           lpOv);            /* overlapped struct */
-    }
-    if ((h == INVALID_HANDLE_VALUE) || (result == 0)) {
-        return -1;
-    }
-    return (jint)written;
-}
-```
-
-在参考文档[6] 里面可以看到，由于缺少了LPOVERLAPPED 参数，这是一个同步调用，但是也不代表会立即刷新到磁盘中, 这是因为内存到磁盘太慢了，默认情况下，Windows 缓存从磁盘读取的和写入到磁盘的文件数据。 这意味着读取操作从系统内存中称为系统文件缓存的区域读取文件数据，而不是从物理磁盘读取文件数据。 相应地，写入操作将文件数据写入系统文件缓存，而不是写入磁盘。这类缓存称为回写缓存。 缓存按文件对象进行管理(见参考文档[7])。FileOutputStream的构造函数，对应到FileOutputStream.c的
-
-```c
-NIEXPORT void JNICALL
-Java_java_io_FileOutputStream_open(JNIEnv *env, jobject this,
-                                   jstring path, jboolean append) {
-    fileOpen(env, this, path, fos_fd,
-             O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC));
-}
-```
-
-fileOpen函数的实现在io_util_md.c中:
-
-```c
-void fileOpen(JNIEnv *env, jobject this, jstring path, jfieldID fid, int flags)
-{
-    jlong h = winFileHandleOpen(env, path, flags);
-    if (h >= 0) {
-        SET_FD(this, h, fid);
-    }
-}
-```
-
-在对应的函数中我们可以看到应该是开启了缓存(应该表示推测，那段代码适配了windows的多个版本)，也就是说写入到磁盘的数据首先到操作系统缓冲区，然后再由缓冲管理器刷新到磁盘中:
-
-![](https://a.a2k6.com/gerald/i/2024/08/25/aaag6f.jpg)
-
-参考文档[7]这么说道:
-
-> 某些应用程序（如病毒检查软件）要求其写入操作立即刷新到磁盘;Windows 通过写通缓存提供此功能。 进程通过将 FILE_FLAG_WRITE_THROUGH 标志传递到对 CreateFile 的调用中，为特定 I/O 操作启用写通缓存。 启用写通缓存后，数据仍会写入缓存，但缓存管理器会立即将数据写入磁盘，而不会因使用延迟编写器而产生延迟。 进程还可以通过调用 FlushFileBuffers 函数强制刷新已打开的文件。
-
-在oracle写的教程中《**The Java™ Tutorials** 》(见参考文档8)中对缓冲流是这么说道:
-
-> Most of the examples we've seen so far use *unbuffered* I/O. This means each read or write request is handled directly by the underlying OS. This can make a program much less efficient, since each such request often triggers disk access, network activity, or some other operation that is relatively expensive.
->
-> 到目前为止，我们看到的大多数例子都使用了*非缓冲*I/O。这意味着每个读取或写入请求都直接由底层操作系统处理。这可能使程序效率大大降低，因为每个这样的请求通常会触发磁盘访问、网络活动或其他相对昂贵的操作。
->
-> To reduce this kind of overhead, the Java platform implements *buffered* I/O streams. Buffered input streams read data from a memory area known as a *buffer*; the native input API is called only when the buffer is empty. Similarly, buffered output streams write data to a buffer, and the native output API is called only when the buffer is full.
->
-> 为了减少这种开销，Java平台实现了*缓冲*I/O流。缓冲输入流从称为*缓冲区*的内存区域读取数据；只有当缓冲区为空时，才会调用原生输入API。类似地，缓冲输出流将数据写入缓冲区，只有当缓冲区满时，才会调用原生输出API。
-
-
+我们再借助演绎式思维推导出来事务消息之后，我们同时又分解事务消息的结构，发现事务消息也就是半消息+二次确认+回查。同时回忆了学习新技术的另一种方式，也就是跟旧有的建立连接，也就是经典问句，有了这个，为什么还要有，回答为什么还有这个过程也就是找使用场景的过程，不同点就是适用的场景。但这种思维并不见得是银弹，有时候出现另一种技术的动机可能不太强烈，我们需要用多种思维去看待问题。再接着我们讲解了延时消息，顺序消息。消费模式也就是广播消费和负载均衡。
 
 ## 参考资料
 
@@ -490,3 +368,7 @@ void fileOpen(JNIEnv *env, jobject this, jstring path, jfieldID fid, int flags)
 [7]   https://learn.microsoft.com/zh-cn/windows/win32/fileio/file-caching 
 
 [8] https://docs.oracle.com/javase/tutorial/essential/io/buffers.html 
+
+[9] CreateFileW 函数 （fileapi.h）https://learn.microsoft.com/zh-cn/windows/win32/api/fileapi/nf-fileapi-createfilew
+
+[10] The Page Cache and Page Writeback https://github.com/firmianay/Life-long-Learner/blob/master/linux-kernel-development/chapter-16.md
