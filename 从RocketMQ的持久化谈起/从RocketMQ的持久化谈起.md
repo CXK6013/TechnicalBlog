@@ -18,7 +18,9 @@ public void write(byte b[])
 private native void writeBytes(byte b[], int off, int len, boolean append)
 ```
 
- 在OpenJDK的FileOutputStream_md.c我们可以看到对应的调用:
+这里的native实现，我们看windows下面的调用，对应的实现是FileOutputStream_md.c，文件路径为: jdk/src/windows/native/java/io/FileOutputStream_md.c
+
+ 在OpenJDK 8(jdk8-b115,后文不做说明, 统一在这个版本下讨论问题)的FileOutputStream_md.c我们可以看到对应的调用:
 
 ```c
 JNIEXPORT void JNICALL
@@ -28,7 +30,7 @@ Java_java_io_FileOutputStream_writeBytes(JNIEnv *env,
 }
 ```
 
-在io_util.c可以看到对应的writeByes调用
+在io_util.c(文件路径为jdk/src/share/native/java/io/io_util.c)可以看到对应的writeByes调用
 
 ```java
 void
@@ -52,13 +54,13 @@ writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
 }
 ```
 
-这里的IO_write是一个宏，在io_util_md.h里面可以看到对应的宏定义:
+这里的IO_write是一个宏，在io_util_md.h(文件目标路径为:jdk/src/windows/native/java/io/io_util_md.c)里面可以看到对应的宏定义:
 
 ```c
 #define IO_Write handleWrite
 ```
 
-在io_util_md.h我们可以看到handleWrite的定义:
+在io_util_md.h(jdk/src/windows/native/java/io/io_util_md.h)我们可以看到handleWrite的定义:
 
 ```c
 JNIEXPORT
@@ -97,7 +99,7 @@ static jint writeInternal(jlong fd, const void *buf, jint len, jboolean append)
 
 在参考文档[6] 里面可以看到，由于缺少了LPOVERLAPPED 参数，这是一个同步调用，但是也不代表会立即刷新到磁盘中, 这是因为内存到磁盘太慢了，默认情况下，Windows 缓存从磁盘读取的和写入到磁盘的文件数据。 这意味着读取操作从系统内存中称为系统文件缓存的区域读取文件数据，而不是从物理磁盘读取文件数据。 相应地，写入操作将文件数据写入系统文件缓存，而不是写入磁盘。这类缓存称为回写缓存。 缓存按文件对象进行管理(见参考文档[7])。
 
-FileOutputStream的构造函数，对应到FileOutputStream_md.c的
+FileOutputStream的构造函数，对应到FileOutputStream_md.c(jdk/src/windows/native/java/io/FileOutputStream_md.c)的
 
 ```c
 NIEXPORT void JNICALL
@@ -108,7 +110,7 @@ Java_java_io_FileOutputStream_open(JNIEnv *env, jobject this,
 }
 ```
 
-fileOpen函数的实现在io_util_md.c中:
+fileOpen函数的实现在io_util_md.c(jdk/src/windows/native/java/io/io_util_md.c)中:
 
 ```c
 void fileOpen(JNIEnv *env, jobject this, jstring path, jfieldID fid, int flags)
@@ -486,7 +488,7 @@ protected DirectByteBuffer(int cap, long addr, FileDescriptor fd,Runnable unmapp
 >
 > FileDescriptor的实例充当底层机器特定结构的匿名句柄，表示打开的文件、打开的套接字(socket)、字节源(RandomAccessFile)。在创建FileInputStream 或FileOutputStream 会包含它，应用程序不应该自己去操纵它。
 
-#### 浅浅总结一下
+### 浅浅总结一下
 
 总结一下FileChannel在map的时候做了什么:
 
@@ -569,7 +571,15 @@ private long ix(int i) {
 
 > mmap()函数在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址在addr参数中指定。length参数指定映射的长度(必须大于0)
 
-所以这份虚拟地址空间并不占用应用进程的内存，只是请求操作系统分配一个虚拟页，向你返回地址。
+所以这份虚拟地址空间并不占用应用进程的内存，只是请求操作系统分配一个虚拟页，向你返回地址。 写到这里我想起《我们来聊聊JVM的GC吧》里面提到:
+
+> 在最底层，JVM 通过 mmap 接口向操作系统申请内存映射，每次申请 2MB 空间，这里是虚拟内存映射，不是真的就消耗了主存的 2MB，只有之后在使用的时候才会真的消耗内存。申请的这些内存放到一个链表中 VirtualSpaceList，作为其中的一个 Node。
+
+在《用Java的BIO和NIO、Netty实现HTTP服务器(六) 从问题中来学习Netty》我们提到了可以通过Unsafe申请内存, 一般会像下面这样使用:
+
+
+
+
 
 ### 回忆RandomAccessFile
 
@@ -599,8 +609,6 @@ private long ix(int i) {
 
 如果我们用mmap呢，我们首发起系统调用向操作系统申请一块区域和文件进行关联，这会返回一个地址，我们之后的读取或写入都是在这个地址上进行操作。这会产生一次内核态到用户态的转换，一次用户态到内核态的转换，接着我们发起read调用，DMA会将数据从操作系统的缓冲区读取到mmap对应的内存区域。
 
-
-
 ###  其他创建mmap的方式
 
 
@@ -613,13 +621,19 @@ private long ix(int i) {
 
 
 
-####  再来看RocketMQ的刷盘
+###  再来看RocketMQ的刷盘
+
+
 
 
 
 
 
 ### 到Redis 的刷盘
+
+
+
+### 到MySQL 的刷盘
 
 
 
