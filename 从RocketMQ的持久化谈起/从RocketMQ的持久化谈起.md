@@ -18,6 +18,8 @@ public void write(byte b[])
 private native void writeBytes(byte b[], int off, int len, boolean append)
 ```
 
+### Windows下面的实现
+
 这里的native实现，我们看windows下面的调用，对应的实现是FileOutputStream_md.c，文件路径为: jdk/src/windows/native/java/io/FileOutputStream_md.c
 
  在OpenJDK 8(jdk8-b115,后文不做说明, 统一在这个版本下讨论问题)的FileOutputStream_md.c我们可以看到对应的调用:
@@ -182,9 +184,7 @@ jlong winFileHandleOpen(JNIEnv *env, jstring path, int flags)
 }
 ```
 
-
-
-### Page Cache VS 缓存管理器
+###  缓存管理器
 
 在对应的函数中我们可以看到应该是开启了缓存(应该表示推测，那段代码适配了windows的多个版本，见在参考文档[9] )，也就是说写入到磁盘的数据首先到操作系统缓冲区，然后再由缓冲管理器刷新到磁盘中:
 
@@ -203,6 +203,14 @@ jlong winFileHandleOpen(JNIEnv *env, jstring path, int flags)
 > Linux内核实现了磁盘缓存称之为页面缓存，设计目标是通过将数据存储在物理内存中来减少磁盘I/O。
 
 操作系统的思路都是相似的，大同小异。
+
+### Linux下的实现
+
+
+
+
+
+
 
 ### 探秘缓冲流
 
@@ -309,6 +317,12 @@ private native int readBytes(byte b[], int off, int len) throws IOException;
 ![](https://a.a2k6.com/gerald/i/2024/08/31/6664u.jpg)
 
 在发起读取和写入的时候还要经过内核态到用户态之间的切换，在文件比较大的时候，这种切换加上数据移动造成效率低下，那么能否将磁盘的数据直接传输到目的地，数据不再经过应用进程，而只是由应用进程在磁盘和目的地之间建立联系，指明要传输的文件和传输的目的地。
+
+
+
+
+
+
 
 ## 零拷贝
 
@@ -571,15 +585,247 @@ private long ix(int i) {
 
 > mmap()函数在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址在addr参数中指定。length参数指定映射的长度(必须大于0)
 
-所以这份虚拟地址空间并不占用应用进程的内存，只是请求操作系统分配一个虚拟页，向你返回地址。 写到这里我想起《我们来聊聊JVM的GC吧》里面提到:
+所以这份虚拟地址空间看起来并不占用应用进程的内存(后面的文章会分析，其实还是占用的)，只是请求操作系统分配一个虚拟页，向你返回地址。 写到这里我想起《我们来聊聊JVM的GC吧》里面提到:
 
 > 在最底层，JVM 通过 mmap 接口向操作系统申请内存映射，每次申请 2MB 空间，这里是虚拟内存映射，不是真的就消耗了主存的 2MB，只有之后在使用的时候才会真的消耗内存。申请的这些内存放到一个链表中 VirtualSpaceList，作为其中的一个 Node。
 
 在《用Java的BIO和NIO、Netty实现HTTP服务器(六) 从问题中来学习Netty》我们提到了可以通过Unsafe申请内存, 一般会像下面这样使用:
 
+```java
+Field field = Unsafe.class.getDeclaredField("theUnsafe");
+// 正常使用不给我们用 
+field.setAccessible(true);
+Unsafe unsafe = (Unsafe)field.get(null);
+// 申请1024个字节,在堆外分配
+// 返回申请内存的首地址
+long l = unsafe.allocateMemory(1024);
+// 释放内存这段内存在堆外
+unsafe.freeMemory(l);
+```
+
+让我们来重新审视内存，大多数现代计算机都将内存分割为字节, 每个字节可以存储8位的信息:
+
+![](https://a.a2k6.com/gerald/i/2024/09/07/tm6o.jpg)
+
+每个字节有唯一地址(address), 用来和内存中的其他字节相区别。如果内存中有n个字节，那么可以把地址看作0~n-1的数。
+
+![](https://a.a2k6.com/gerald/i/2024/09/07/ug31.jpg)
+
+可直接执行的程序由代码(C语言中与语句对应的机器指令)和数据(原始程序中的变量)两部分构成。程序中的每个变量占有一个或多个字节内存，把第一个字节的地址成为变量的地址。若某变量i占有地址为2000和2001的两个字节，所以变量i的地址是2000:
+
+![](https://a.a2k6.com/gerald/i/2024/09/07/4eqo.jpg)
+
+所谓指针就是内存地址的别名，我们可以通过内存地址来访问地址中的内容：
+
+```c
+int main(void){
+    int i = 4;
+    int *p = &i;
+    printf("ptr指向的地址: %p\n", (void*)p);
+    printf("%d\n",*p);
+    return 0;
+}
+```
+
+在《用Java的BIO和NIO、Netty实现HTTP服务器(六) 从问题中来学习Netty》里面我们也指出allocateMemory其实是调用了os的malloc函数，上面的操作在C语言里面对应的为:
+
+```C
+// void 表示暂时没有类型,可以将其转换成任意类型的指针。
+void *address = malloc(1024);
+```
+
+频繁申请内存
+
+### malloc vs mmap
+
+在Linux上mmap调用的函数声明如下图所示:
+
+```c
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t > offset);  
+```
+
+让我产生好奇的是mmap调用和malloc都返回一个地址，我翻看了Linux上mmap调用的注释:
+
+> mmap() creates a new mapping in the virtual address space of the   calling process.  The starting address for the new mapping is   specified in addr.  The length argument specifies the length of  the mapping (which must be greater than 0)。
+>
+> mmap()在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址由addr参数指定。length参数指定了映射的长度(必须大于0)。
+>
+>   After the mmap() call has returned, the file descriptor, fd,   can  be closed immediately without invalidating the mapping.
+>
+> 在mmap调用返回，文件描述符`fd`可以立即关闭,而不会使映射失效。
+>
+> If addr is NULL, then the kernel chooses the (page-aligned)  address at which to create the mapping; this is the most portable method of creating a new mapping. If addr is not NULL, then the kernel takes it as a hint about where to place the mapping; 
+>
+> 如果地址为空，则内核选择创建映射的(页面对齐的)地址;这是创建新映射的最可移植的方法。如果`addr`不为`NULL`,则内核将其作为放置映射位置的提示;
+>
+> onLinux, the kernel will pick a nearby page boundary (but always above or equal to the value specified by /proc/sys/vm/mmap_min_addr) and attempt to create the mapping there. 
+>
+> 在Linux上,内核会选择附近的页面边界(但总是大于或等于`/proc/sys/vm/mmap_min_addr`指定的值),并尝试在那里创建映射。
+>
+> If another mapping already exists there, the kernel picks a new address that may or may not depend on the hint. Theaddress of the new mapping is returned as the result of the call.
+>
+> 如果那里已经存在另一个映射,内核会选择一个新的地址,这个地址可能依赖于提示,也可能不依赖。新映射的地址作为调用的结果返回
+
+malloc的注释是:
+
+>   The malloc() function allocates size bytes and returns a pointer to the allocated memory.  The memory is not initialized.  If size
+>    is 0, then malloc() returns a unique pointer value that can later  be successfully passed to free().  (See "Nonportable behavior"  for portability issues.)
+>
+> malloc函数分配指定字节返回分配内存的指针。内存没有被初始化，如果传入的是0，返回一个唯一的指针值，这个值可以传递给后面的函数。返回的也是一个地址。
+
+#### Windows下的mmap
+
+但我在windows上写代码的，于是向看下windows的实现：
+
+```java
+JNIEXPORT jlong JNICALL
+Java_sun_nio_ch_FileChannelImpl_map0(JNIEnv *env, jobject this,
+                               jint prot, jlong off, jlong len)
+{
+    void *mapAddress = 0;
+    jint lowOffset = (jint)off;
+    jint highOffset = (jint)(off >> 32);
+    jlong maxSize = off + len;
+    jint lowLen = (jint)(maxSize);
+    jint highLen = (jint)(maxSize >> 32);
+    jobject fdo = (*env)->GetObjectField(env, this, chan_fd);
+    HANDLE fileHandle = (HANDLE)(handleval(env, fdo));
+    HANDLE mapping;
+    DWORD mapAccess = FILE_MAP_READ;
+    DWORD fileProtect = PAGE_READONLY;
+    DWORD mapError;
+    BOOL result;
+
+    if (prot == sun_nio_ch_FileChannelImpl_MAP_RO) {
+        fileProtect = PAGE_READONLY;
+        mapAccess = FILE_MAP_READ;
+    } else if (prot == sun_nio_ch_FileChannelImpl_MAP_RW) {
+        fileProtect = PAGE_READWRITE;
+        mapAccess = FILE_MAP_WRITE;
+    } else if (prot == sun_nio_ch_FileChannelImpl_MAP_PV) {
+        fileProtect = PAGE_WRITECOPY;
+        mapAccess = FILE_MAP_COPY;
+    }
+    // 主要关注CreateFileMapping调用
+    mapping = CreateFileMapping(
+        fileHandle,      /* Handle of file */
+        NULL,            /* Not inheritable */
+        fileProtect,     /* Read and write */
+        highLen,         /* High word of max size */
+        lowLen,          /* Low word of max size */
+        NULL);           /* No name for object */
+
+    if (mapping == NULL) {
+        JNU_ThrowIOExceptionWithLastError(env, "Map failed");
+        return IOS_THROWN;
+    }
+	// MapViewOfFile调用
+    mapAddress = MapViewOfFile(
+        mapping,             /* Handle of file mapping object */
+        mapAccess,           /* Read and write access */
+        highOffset,          /* High word of offset */
+        lowOffset,           /* Low word of offset */
+        (DWORD)len);         /* Number of bytes to map */
+    mapError = GetLastError();
+    result = CloseHandle(mapping);
+    if (result == 0) {
+        JNU_ThrowIOExceptionWithLastError(env, "Map failed");
+        return IOS_THROWN;
+    }
+    if (mapAddress == NULL) {
+        if (mapError == ERROR_NOT_ENOUGH_MEMORY)
+            JNU_ThrowOutOfMemoryError(env, "Map failed");
+        else
+            JNU_ThrowIOExceptionWithLastError(env, "Map failed");
+        return IOS_THROWN;
+    }
+    return ptr_to_jlong(mapAddress);
+}
+
+```
+
+这里我们可以看到主要调用为:
+
+![](https://a.a2k6.com/gerald/i/2024/09/07/7w2oy.jpg)
 
 
 
+CreateFileMapping的函数说明为: 为指定文件创建或打开命名或未命名的文件映射对象。如果函数成功，则返回值是新创建的文件映射对象的句柄。
+
+MapViewOfFile 的函数说明为: 将文件映射的视图映射到调用进程的地址空间中。如果函数成功，则返回值是映射视图的起始地址。
+
+#### Linux下的mmap实现
+
+于是又看了下Linux的实现:
+
+```c
+JNIEXPORT jlong JNICALL
+Java_sun_nio_ch_FileChannelImpl_map0(JNIEnv *env, jobject this,
+                                     jint prot, jlong off, jlong len)
+{
+    void *mapAddress = 0;
+    jobject fdo = (*env)->GetObjectField(env, this, chan_fd);
+    jint fd = fdval(env, fdo);
+    int protections = 0;
+    int flags = 0;
+
+    if (prot == sun_nio_ch_FileChannelImpl_MAP_RO) {
+        protections = PROT_READ;
+        flags = MAP_SHARED;
+    } else if (prot == sun_nio_ch_FileChannelImpl_MAP_RW) {
+        protections = PROT_WRITE | PROT_READ;
+        flags = MAP_SHARED;
+    } else if (prot == sun_nio_ch_FileChannelImpl_MAP_PV) {
+        protections =  PROT_WRITE | PROT_READ;
+        flags = MAP_PRIVATE;
+    }
+    mapAddress = mmap64(
+        0,                    /* Let OS decide location */
+        len,                  /* Number of bytes to map */
+        protections,          /* File permissions */
+        flags,                /* Changes are shared */
+        fd,                   /* File descriptor of mapped file */
+        off);                 /* Offset into file */
+
+    if (mapAddress == MAP_FAILED) {
+        if (errno == ENOMEM) {
+            JNU_ThrowOutOfMemoryError(env, "Map failed");
+            return IOS_THROWN;
+        }
+        return handle(env, -1, "Map failed");
+    }
+
+    return ((jlong) (unsigned long) mapAddress);
+}
+```
+
+调用的是mmap64，在64位机器上mmap64和mmap没有什么不同，引入mmap64是为了在32位系统上启用大文件支持, mmap和mmap在64位系统上没有区别。
+
+#### 重新理解内存划分和内存分配问题
+
+我们知道Hotspot 在启动的时候将使用的内存按照不同的用途分为堆、栈、本地方法栈、虚拟机栈，元空间。在上面我们看到Linux上mmap的注释:
+
+> mmap()在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址由addr参数指定。length参数指定了映射的长度(必须大于0)。
+
+这个进程的虚拟地址空间让我感到对有些陌生，我对这个概念有些似懂非懂，结合JVM运行时区域划分，这个虚拟的地址空间该怎么理解呢，它在堆外吗?
+
+然后我们再回忆一下操作系统对内存的管理:
+
+> 操作系统以页面为单位管理内存，页面的大小通常为4096字节(但某些体系结构或操作系统使用更大的页面)，操作系统无法将小于一个页大小的内存空间分配给进程。假设你需要10个字节来存储一个字符串。分配4096个字节而只使用前10个字节是非常浪费的。内存分配器可以向操作系统请求一个页面，并将该页面分割成更小的分配
+
+> 虚拟内存（英语：Virtual memory）是计算机系统内存管理的一种技术。它使得应用程序认为它拥有连续可用的内存（一个连续完整的地址空间），而实际上物理内存通常被分隔成多个内存碎片，还有部分暂时存储在外部磁盘存储器上，在需要时进行数据交换。与没有使用虚拟内存技术的系统相比，使用这种技术使得大型程序的编写变得更容易，对真正的物理内存（例如RAM）的使用也更有效率  《维基百科》
+
+所以mmap也可以像malloc一样分配内存，这对应mmap的匿名映射:
+
+```c
+p = mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+```
+
+在《我们来聊聊JVM的GC吧》里面提到元空间就是通过mmap来向操作系统申请内存的。 在调用mmap进行文件映射的时候，是将进程虚拟内存空间中的某一段虚拟内存区域与磁盘中某个文件的某段区域进行映射。 当我们启动JVM的时候，JVM根据设定来使用glibc来初始化堆内存，之后由JVM的gc来管理这块内存。在参考文档[11]中我们可以看到现代进程虚拟内存空间的主要区域，有一块区域专门用来存储： 用于存放动态链接库以及内存映射区域的文件映射与匿名映射区。
+
+![](https://a.a2k6.com/gerald/i/2024/09/08/6gys5.jpg)
+
+注意上门的堆并不同于JVM中的堆，这里的堆泛指的是存储动态申请内存的地方。到现在我们已经心满意足的得到了我们想要的答案，我们创建的文件映射消耗的虚拟内存在进程里面会专门有一块地址空间存储。
 
 ### 回忆RandomAccessFile
 
@@ -595,31 +841,173 @@ private long ix(int i) {
 
 在上面的讨论中我们已经直到，数据的流动，应用程序首先从磁盘到达缓存管理器，然后从缓存到达进程里面，read调用会经历两次上下文切换, read发起用户态转内核态，read返回，内核态转用户态。这一动作通常由DMA完成，从磁盘读取内容到达系统缓冲区，然后再到达应用进程。这期间发生了两次复制，一次由磁盘到操作系统的缓存，然后再由操作系统的缓存复制到应用进程的内存。
 
-然后通过Socket发起send调用，然后由用户态切换到内核态，这个时候send调用将数据同样放入操作系统的内核缓冲区，这个缓冲区与Socket相关。再次发生数据复制。接着send调用返回，内核态转用户态。然后由DMA将数据从内核缓冲区复制到协议引擎，产生第四次数据复制。
+然后通过Socket发起send调用，然后由用户态切换到内核态，这个时候send调用将数据同样放入操作系统的内核缓冲区，这个缓冲区与Socket相关。再次发生数据复制。接着send调用返回，内核态转用户态。然后由DMA将数据从内核缓冲区复制到协议引擎，产生第四次数据复制。在参考文档中[16] 中我们可以看到在X86上切换的成本为100ns，这意味着在上下文切换次数并不多的情况下减少上下文切换次数带来的性能提升比较小。
 
+![](https://a.a2k6.com/gerald/i/2024/09/08/31lb.jpg)
 
+对应的代码如下所示:
 
+```java
+public class ServerSocketChannelTest {
+    private static final ExecutorService POOL = Executors.newFixedThreadPool(4);
 
+    public static void main(String[] args) throws Exception {
+        try (ServerSocketChannel serverSocketChannel = ServerSocketChannel.open()) {
+            serverSocketChannel.bind(new InetSocketAddress(8080));
+            // 不断的接收连接
+            while (true) {
+                SocketChannel socketChannel = serverSocketChannel.accept();
+                POOL.execute(() -> processSocket(socketChannel));
+            }
+        }
+    }
+    private static void processSocket(SocketChannel socketChannel) {
 
+        try(FileInputStream fileInputStream =  new FileInputStream("D:\\学习资料\\Flexcil_v1.1.6.14_.apk"); ) {
+            int bytesRead = 0;
+            ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+            while (((bytesRead = fileInputStream.read(byteBuffer.array())) != -1)) {
+                byteBuffer.limit(bytesRead);
+                socketChannel.write(byteBuffer);
+                byteBuffer.clear();
+            }
+            // 关闭资源
+            fileInputStream.close();
+            socketChannel.close();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+```
 
+```java
+try (Socket socket = new Socket()) {
+    socket.connect(new InetSocketAddress(8080));
+    try (InputStream inputStream = socket.getInputStream();
+         FileOutputStream fileOutputStream = new FileOutputStream("D:\\tmp\\Flexcil_v1.1.6.14_.apk");
+    ) {
+        byte[] array = new byte[4096];
+        int readBytes = 0;
+        while ((readBytes = inputStream.read(array)) != -1) {
+            fileOutputStream.write(array, 0, readBytes);
+        }
+    }
+}
+```
 
+### 用mmap方式来改写
 
+现在让我们用mmap方式来改写一下, 我们只改processSocket中的方法:
 
+```java
+private static void processSocket(SocketChannel socketChannel) {
+    try(FileInputStream fileInputStream =  new FileInputStream("D:\\学习资料\\Flexcil_v1.1.6.14_.apk"); ) {
+        MappedByteBuffer mappedByteBuffer = fileInputStream.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, 				fileInputStream.getChannel().size());
+        socketChannel.write(mappedByteBuffer);
+        socketChannel.close();
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
+```
 
+我们在上面的文章讨论了，MappedByteBuffer最终是DirectByteBuffer，然后我们接着分析这个写入的流程:
 
-如果我们用mmap呢，我们首发起系统调用向操作系统申请一块区域和文件进行关联，这会返回一个地址，我们之后的读取或写入都是在这个地址上进行操作。这会产生一次内核态到用户态的转换，一次用户态到内核态的转换，接着我们发起read调用，DMA会将数据从操作系统的缓冲区读取到mmap对应的内存区域。
+```java
+public int write(ByteBuffer buf) throws IOException {
+    Objects.requireNonNull(buf);
+    writeLock.lock();
+    try {
+        ensureOpenAndConnected();
+        boolean blocking = isBlocking();
+        int n = 0;
+        try {
+            beginWrite(blocking);
+            if (blocking) {
+                do {
+                    // 核心代码也就是这里
+                    n = IOUtil.write(fd, buf, -1, nd);
+                } while (n == IOStatus.INTERRUPTED && isOpen());
+            } else {
+                n = IOUtil.write(fd, buf, -1, nd);
+            }
+        } finally {
+            endWrite(blocking, n > 0);
+            if (n <= 0 && isOutputClosed)
+                throw new AsynchronousCloseException();
+        }
+        return IOStatus.normalize(n);
+    } finally {
+        writeLock.unlock();
+    }
+}
+```
+
+然后走到的IOUtil的write方法上:
+
+```java
+static int write(FileDescriptor fd, ByteBuffer src, long position,
+                 boolean directIO, int alignment, NativeDispatcher nd)
+    throws IOException
+{	
+	// 省略无关代码
+    if (src instanceof DirectBuffer) {
+        return writeFromNativeBuffer(fd, src, position, directIO, alignment, nd);
+    }
+}
+```
+
+```java
+private static int writeFromNativeBuffer(FileDescriptor fd, ByteBuffer bb,
+                                         long position, boolean directIO,
+                                         int alignment, NativeDispatcher nd)
+    throws IOException
+{
+    int pos = bb.position();
+    int lim = bb.limit();
+    assert (pos <= lim);
+    int rem = (pos <= lim ? lim - pos : 0);
+
+    if (directIO) {
+        Util.checkBufferPositionAligned(bb, pos, alignment);
+        Util.checkRemainingBufferSizeAligned(rem, alignment);
+    }
+
+    int written = 0;
+    if (rem == 0)
+        return 0;
+    if (position != -1) {
+        written = nd.pwrite(fd,
+                            ((DirectBuffer)bb).address() + pos,
+                            rem, position);
+    } else {
+        //  最后走到这里
+        written = nd.write(fd, ((DirectBuffer)bb).address() + pos, rem);
+    }
+    if (written > 0)
+        bb.position(pos + written);
+}
+```
 
 ###  其他创建mmap的方式
 
+上面我们讲了从RandomAccessFile 获取MappedByteBuffer、从FileInputStream 获取MappedByteBuffer，其实都从FileChannel里面获取，我们也可以直接创建一个Channel：
 
-
-
-
-
+```java
+FileChannel fc =
+        FileChannel.open( FileSystems.getDefault().getPath("目标paths"),
+                StandardOpenOption.WRITE,
+                StandardOpenOption.READ);
+MappedByteBuffer mbb =
+        fc.map(FileChannel.MapMode.READ_WRITE,
+                0,          // position
+                fc.size()); // size
+```
 
 ### transferto
 
-
+ 
 
 ###  再来看RocketMQ的刷盘
 
@@ -627,15 +1015,7 @@ private long ix(int i) {
 
 
 
-
-
 ### 到Redis 的刷盘
-
-
-
-### 到MySQL 的刷盘
-
-
 
 
 
@@ -650,3 +1030,34 @@ private long ix(int i) {
 ## 参考资料
 
 [1] What they don’t tell you about demand paging in school  https://offlinemark.com/demand-paging/
+
+[2]   malloc vs mmap in C https://stackoverflow.com/questions/1739296/malloc-vs-mmap-in-c
+
+[3] What are void pointers for in C++? https://stackoverflow.com/questions/2860626/what-are-void-pointers-for-in-c
+[4] Is there any difference between mmap vs mmap64? https://stackoverflow.com/questions/59453555/is-there-any-difference-between-mmap-vs-mmap64
+
+[5] CreateFileMappingW https://learn.microsoft.com/zh-cn/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw?redirectedfrom=MSDN
+
+[6]  Why is malloc() considered a library call and not a system call? https://stackoverflow.com/questions/71413587/why-is-malloc-considered-a-library-call-and-not-a-system-call
+
+[7] Is there any difference between mmap vs mmap64?  https://stackoverflow.com/questions/59453555/is-there-any-difference-between-mmap-vs-mmap64 
+
+[8] Why is malloc() considered a library call and not a system call? https://stackoverflow.com/questions/71413587/why-is-malloc-considered-a-library-call-and-not-a-system-call
+
+[9] How to use mmap to allocate a memory in heap?  https://stackoverflow.com/questions/4779188/how-to-use-mmap-to-allocate-a-memory-in-heap
+
+[10]  mmap 内存映射，是越过了操作系统，直接通过内存访问文件吗？  https://www.zhihu.com/question/522132580/answer/3241695059
+
+[11] 一步一图带你深入理解 Linux 虚拟内存管理  https://mp.weixin.qq.com/s?__biz=Mzg2MzU3Mjc3Ng==&mid=2247486732&idx=1&sn=435d5e834e9751036c96384f6965b328&chksm=ce77cb4bf900425d33d2adfa632a4684cf7a63beece166c1ffedc4fdacb807c9413e8c73f298&scene=178&cur_album_id=2559805446807928833#rd
+
+[12] 大量类加载器创建导致诡异FullGC  https://heapdump.cn/article/1924890
+
+[13]  JDK-8268893  https://bugs.openjdk.org/browse/JDK-8268893
+
+[14] Temurin™ Supported Platforms  https://adoptium.net/zh-CN/supported-platforms/
+
+[15] glibc  https://sourceware.org/glibc/wiki/MallocInternals
+
+[16] Why is malloc() considered a library call and not a system call? https://stackoverflow.com/questions/71413587/why-is-malloc-considered-a-library-call-and-not-a-system-call
+
+[17] Chapter 16: The Page Cache and Page Writeback https://github.com/firmianay/Life-long-Learner/blob/master/linux-kernel-development/chapter-16.md
