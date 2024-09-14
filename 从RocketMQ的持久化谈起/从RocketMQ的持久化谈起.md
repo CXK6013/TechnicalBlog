@@ -650,7 +650,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t > offse
 >
 > mmap()在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址由addr参数指定。length参数指定了映射的长度(必须大于0)。
 >
->   After the mmap() call has returned, the file descriptor, fd,   can  be closed immediately without invalidating the mapping.
+> After the mmap() call has returned, the file descriptor, fd,   can  be closed immediately without invalidating the mapping.
 >
 > 在mmap调用返回，文件描述符`fd`可以立即关闭,而不会使映射失效。
 >
@@ -669,9 +669,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t > offse
 malloc的注释是:
 
 >   The malloc() function allocates size bytes and returns a pointer to the allocated memory.  The memory is not initialized.  If size
->    is 0, then malloc() returns a unique pointer value that can later  be successfully passed to free().  (See "Nonportable behavior"  for portability issues.)
+>   is 0, then malloc() returns a unique pointer value that can later  be successfully passed to free().  (See "Nonportable behavior"  for portability issues.)
 >
-> malloc函数分配指定字节返回分配内存的指针。内存没有被初始化，如果传入的是0，返回一个唯一的指针值，这个值可以传递给后面的函数。返回的也是一个地址。
+>   malloc函数分配指定字节返回分配内存的指针。内存没有被初始化，如果传入的是0，返回一个唯一的指针值，这个值可以传递给后面的函数。返回的也是一个地址。
 
 #### Windows下的mmap
 
@@ -990,6 +990,72 @@ private static int writeFromNativeBuffer(FileDescriptor fd, ByteBuffer bb,
 }
 ```
 
+传入的FileDescriptor来自于SocketChannel , 我们姑且可以认为代表Socket ，NativeDispatcher传入的是SocketDispatcher，我们可以看到SocketDispatcher.c实现(目录在jdk/src/windows/native/sun/nio/ch/SocketDispatcher.c):
+
+```c
+JNIEXPORT jint JNICALL
+Java_sun_nio_ch_SocketDispatcher_write0(JNIEnv *env, jclass clazz, jobject fdo,
+                                       jlong address, jint total)
+{
+    /* set up */
+    int i = 0;
+    DWORD written = 0;
+    jint count = 0;
+    jint fd = fdval(env, fdo);
+    WSABUF buf;
+
+    do {
+        /* limit size */
+        jint len = total - count;
+        if (len > MAX_BUFFER_SIZE)
+            len = MAX_BUFFER_SIZE;
+
+        /* copy iovec into WSABUF */
+        buf.buf = (char *)address;
+        buf.len = (u_long)len;
+
+        /* write from the buffer */
+        i = WSASend((SOCKET)fd,     /* Socket */
+                    &buf,           /* pointers to the buffers */
+                    (DWORD)1,       /* number of buffers to process */
+                    &written,       /* receives number of bytes written */
+                    0,              /* no flags */
+                    0,              /* no overlapped sockets */
+                    0);             /* no completion routine */
+
+        if (i == SOCKET_ERROR) {
+            if (count > 0) {
+                /* can't throw exception when some bytes have been written */
+                break;
+            } else {
+               int theErr = (jint)WSAGetLastError();
+               if (theErr == WSAEWOULDBLOCK) {
+                   return IOS_UNAVAILABLE;
+               }
+               JNU_ThrowIOExceptionWithLastError(env, "Write failed");
+               return IOS_THROWN;
+            }
+        }
+
+        count += written;
+        address += written;
+
+    } while ((count < total) && (written == MAX_BUFFER_SIZE));
+
+    return count;
+}
+```
+
+简单的捋一下mmap这个流程, 这里其实就是获取mmap返回的地址，然后拿到地址的内容，然后向socket对应的缓冲区写内容。现在整个流程看起来是这样的:
+
+
+
+
+
+
+
+
+
 ###  其他创建mmap的方式
 
 上面我们讲了从RandomAccessFile 获取MappedByteBuffer、从FileInputStream 获取MappedByteBuffer，其实都从FileChannel里面获取，我们也可以直接创建一个Channel：
@@ -1006,6 +1072,10 @@ MappedByteBuffer mbb =
 ```
 
 ### transferto
+
+
+
+
 
  
 
