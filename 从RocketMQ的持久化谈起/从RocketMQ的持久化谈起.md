@@ -35,8 +35,7 @@ Java_java_io_FileOutputStream_writeBytes(JNIEnv *env,
 在io_util.c(文件路径为jdk/src/share/native/java/io/io_util.c)可以看到对应的writeByes调用
 
 ```java
-void
-writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
+voidwriteBytes(JNIEnv *env, jobject this, jbyteArray bytes,
            jint off, jint len, jboolean append, jfieldID fid)
 {	// 省略无关代码调用
     if (!(*env)->ExceptionOccurred(env)) {
@@ -65,8 +64,7 @@ writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
 在io_util_md.h(jdk/src/windows/native/java/io/io_util_md.h)我们可以看到handleWrite的定义:
 
 ```c
-JNIEXPORT
-jint handleWrite(jlong fd, const void *buf, jint len) {
+JNIEXPORT jint handleWrite(jlong fd, const void *buf, jint len) {
     return writeInternal(fd, buf, len, JNI_FALSE);
 }
 static jint writeInternal(jlong fd, const void *buf, jint len, jboolean append)
@@ -184,6 +182,12 @@ jlong winFileHandleOpen(JNIEnv *env, jstring path, int flags)
 }
 ```
 
+windows下面的调用链路图如下所示:
+
+![](https://a.a2k6.com/gerald/i/2024/09/16/6kdfy.jpg)
+
+所谓系统调用是一种特殊的函数(一般由操作系统提供)，它允许你跨越保护域。当一个程序在用户态(用户模式下)执行的时候，它不被允许执行在内核态下面运行的代码所允许的操作。例如在用户态下面的程序无法在没有内核帮助的情况下读取文件。当用户程序向操作系统请求服务的时候，系统通过系统调用保护自己不受恶意或有缺陷程序的影响。系统调用执行一条特殊的硬件指令，通常成为“陷阱”，将控制权转移到内核，然后内核决定是否满足该请求。
+
 ###  缓存管理器
 
 在对应的函数中我们可以看到应该是开启了缓存(应该表示推测，那段代码适配了windows的多个版本，见在参考文档[9] )，也就是说写入到磁盘的数据首先到操作系统缓冲区，然后再由缓冲管理器刷新到磁盘中:
@@ -202,17 +206,182 @@ jlong winFileHandleOpen(JNIEnv *env, jstring path, int flags)
 >
 > Linux内核实现了磁盘缓存称之为页面缓存，设计目标是通过将数据存储在物理内存中来减少磁盘I/O。
 
-操作系统的思路都是相似的，大同小异。
+### Linux下面的实现
 
-### Linux下的实现
+在Linux下面对应的实现在jdk/src/solaris/native/java/io/FileOutputStream_md.c中:
+
+```c
+JNIEXPORT void JNICALL
+Java_java_io_FileOutputStream_writeBytes(JNIEnv *env,
+    jobject this, jbyteArray bytes, jint off, jint len, jboolean append) {
+    writeBytes(env, this, bytes, off, len, append, fos_fd);
+}
+```
+
+对应的实现是(jdk/src/share/native/java/io/io_util.c)
+
+```c
+#define BUF_SIZE 8192
+void writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
+           jint off, jint len, jboolean append, jfieldID fid)
+{		
+	// 省略无关代码
+    if (!(*env)->ExceptionOccurred(env)) {
+        off = 0;
+        while (len > 0) {
+            fd = GET_FD(this, fid);
+            if (fd == -1) {
+                JNU_ThrowIOException(env, "Stream Closed");
+                break;
+            }
+            if (append == JNI_TRUE) {
+                n = IO_Append(fd, buf+off, len);
+            } else {
+                n = IO_Write(fd, buf+off, len);
+            }
+            if (n == JVM_IO_ERR) {
+                JNU_ThrowIOExceptionWithLastError(env, "Write error");
+                break;
+            } else if (n == JVM_IO_INTR) {
+                JNU_ThrowByName(env, "java/io/InterruptedIOException", NULL);
+                break;
+            }
+            off += n;
+            len -= n;
+        }
+    }
+    if (buf != stackBuf) {
+        free(buf);
+    }
+}
+```
+
+在jdk/src/solaris/native/java/io/io_util_md.h看到这个IO_Write也是一个宏定义：
+
+```C
+#define IO_Write JVM_Write
+```
+
+这个JVM_Write在hotspot的JVM.cpp中:
+
+```c
+JVM_LEAF(jint, JVM_Write(jint fd, char *buf, jint nbytes))
+    JVMWrapper2("JVM_Write (0x%x)", fd);
+    //%note jvm_r6
+    return (jint)os::write(fd, buf, nbytes);
+JVM_END
+```
+
+对应Linux 的实现在(hotspot/src/os/linux/vm/os_linux.inline.hpp)中:
+
+```c++
+#include <unistd.h>
+inline size_t os::write(int fd, const void *buf, unsigned int nBytes) {
+  size_t res;
+  RESTARTABLE((size_t) ::write(fd, buf, (size_t) nBytes), res);
+  return res;
+}
+```
+
+这里其实调用的是Linux的write函数, Linux中write的调用说明为:
+
+> write() writes up to count bytes from the buffer starting at buf  to the file referred to by the file descriptor fd.
+>
+> - `write()` 函数尝试将最多 `count` 个字节从 `buf` 指向的缓冲区写入到文件描述符 `fd` 所引用的文件中。
+
+> A successful return from write() does not make any guarantee that data has been committed to disk. On some filesystems, including NFS, it does not even guarantee that space has successfully been reserved for the data. In this case, some errors might be delayed until a future write(), fsync(2), or even close(2). 
+>
+> 成功调用并不承诺数据到达磁盘，在一些文件系统上，包括NFS，甚至不保证已为数据成功预留了空间。某些错误可能会延迟到未来的 `write()`、`fsync(2)` 或甚至 `close(2)` 调用时才显现。
+
+> The only way to be sure is to call fsync(2) after you are done writing all your data.
+>
+> 确保数据已写入磁盘的唯一方法是在完成所有数据写入后调用 `fsync(2)`
+
+这里有两个问题，第一个问题在Java中如何将数据确保刷到磁盘上，第二个问题既然没刷到磁盘，这个数据在调用返回之后在哪个位置。
+
+### 如何将数据确保刷新到磁盘上
+
+- 方式一
+
+```java
+try(FileOutputStream fileOutputStream = new FileOutputStream("D:\\学习资料\\SDK\\1.txt");){
+    fileOutputStream.write("hello world".getBytes());
+    fileOutputStream.getFD().sync();
+}catch (Exception e) {
+    e.printStackTrace();
+}
+```
+
+​	最终调用的是FileDescriptor的sync方法，这同样也是一个系统调用：
+
+```c
+public native void sync() throws SyncFailedException;
+```
+
+对应的实现位于jdk/src/solaris/native/java/io/FileDescriptor_md.c下面:
+
+```c
+JNIEXPORT void JNICALL
+Java_java_io_FileDescriptor_sync(JNIEnv *env, jobject this) {
+    int fd = (*env)->GetIntField(env, this, IO_fd_fdID);
+    if (JVM_Sync(fd) == -1) {
+        JNU_ThrowByName(env, "java/io/SyncFailedException", "sync failed");
+    }
+}
+```
+
+JVM_syn的实现在hotspot/src/share/vm/prims/jvm.cpp:
+
+```c++
+JVM_LEAF(jint, JVM_Sync(jint fd))
+  JVMWrapper2("JVM_Sync (0x%x)", fd);
+  //%note jvm_r6
+  return os::fsync(fd);
+JVM_END
+```
+
+#### Linux上的实现
+
+ 然后分配到对应操作系统的调用上，在Linux位于:hotspot/src/os/linux/vm/os_linux.inline.hpp
+
+```
+inline int os::fsync(int fd) {
+  return ::fsync(fd);
+}
+```
+
+fsync是一个Linux系统调用将对文件的更改写入内容刷新到磁盘上，由此这让我想起了Redis的AOF持久化机制，那么也要通过Linux的系统调用来将内容刷新到磁盘上，
+
+#### Windows的实现
+
+在windows上的实现为:
+
+```c
+// This code is a copy of JDK's sysSync
+// from src/windows/hpi/src/sys_api_md.c
+// except for the legacy workaround for a bug in Win 98
+
+int os::fsync(int fd) {
+  HANDLE handle = (HANDLE)::_get_osfhandle(fd);
+
+  if ( (!::FlushFileBuffers(handle)) &&
+         (GetLastError() != ERROR_ACCESS_DENIED) ) {
+    /* from winerror.h */
+    return -1;
+  }
+  return 0;
+}
+```
+
+FlushFileBuffers 是windows的函数作用为将缓冲区的内容刷新到磁盘上。
+
+#### 通过Channel刷
 
 
 
+## 探秘缓冲流
 
-
-
-
-### 探秘缓冲流
+在上面的调用中假如我们频繁写入，就会经历多次上下文切换，每次上下文切换都需要成本，参考文档中[16] 中我们可以看到在X86上切换的成本为100ns, 除了这个成本以外，如果每次写入的字节比较小，这就像一辆车没有满载，对系统调用的利用率就不够高。那我们能不能像快递站一样到一个快递就开始派送，而是快递员装满某个小区的快递之后才开始配送。这也就是缓冲流的设计思路。
 
 在oracle写的教程中《**The Java™ Tutorials** 》(见参考文档8)中对缓冲流是这么说道:
 
@@ -317,10 +486,6 @@ private native int readBytes(byte b[], int off, int len) throws IOException;
 ![](https://a.a2k6.com/gerald/i/2024/08/31/6664u.jpg)
 
 在发起读取和写入的时候还要经过内核态到用户态之间的切换，在文件比较大的时候，这种切换加上数据移动造成效率低下，那么能否将磁盘的数据直接传输到目的地，数据不再经过应用进程，而只是由应用进程在磁盘和目的地之间建立联系，指明要传输的文件和传输的目的地。
-
-
-
-
 
 
 
@@ -990,72 +1155,6 @@ private static int writeFromNativeBuffer(FileDescriptor fd, ByteBuffer bb,
 }
 ```
 
-传入的FileDescriptor来自于SocketChannel , 我们姑且可以认为代表Socket ，NativeDispatcher传入的是SocketDispatcher，我们可以看到SocketDispatcher.c实现(目录在jdk/src/windows/native/sun/nio/ch/SocketDispatcher.c):
-
-```c
-JNIEXPORT jint JNICALL
-Java_sun_nio_ch_SocketDispatcher_write0(JNIEnv *env, jclass clazz, jobject fdo,
-                                       jlong address, jint total)
-{
-    /* set up */
-    int i = 0;
-    DWORD written = 0;
-    jint count = 0;
-    jint fd = fdval(env, fdo);
-    WSABUF buf;
-
-    do {
-        /* limit size */
-        jint len = total - count;
-        if (len > MAX_BUFFER_SIZE)
-            len = MAX_BUFFER_SIZE;
-
-        /* copy iovec into WSABUF */
-        buf.buf = (char *)address;
-        buf.len = (u_long)len;
-
-        /* write from the buffer */
-        i = WSASend((SOCKET)fd,     /* Socket */
-                    &buf,           /* pointers to the buffers */
-                    (DWORD)1,       /* number of buffers to process */
-                    &written,       /* receives number of bytes written */
-                    0,              /* no flags */
-                    0,              /* no overlapped sockets */
-                    0);             /* no completion routine */
-
-        if (i == SOCKET_ERROR) {
-            if (count > 0) {
-                /* can't throw exception when some bytes have been written */
-                break;
-            } else {
-               int theErr = (jint)WSAGetLastError();
-               if (theErr == WSAEWOULDBLOCK) {
-                   return IOS_UNAVAILABLE;
-               }
-               JNU_ThrowIOExceptionWithLastError(env, "Write failed");
-               return IOS_THROWN;
-            }
-        }
-
-        count += written;
-        address += written;
-
-    } while ((count < total) && (written == MAX_BUFFER_SIZE));
-
-    return count;
-}
-```
-
-简单的捋一下mmap这个流程, 这里其实就是获取mmap返回的地址，然后拿到地址的内容，然后向socket对应的缓冲区写内容。现在整个流程看起来是这样的:
-
-
-
-
-
-
-
-
-
 ###  其他创建mmap的方式
 
 上面我们讲了从RandomAccessFile 获取MappedByteBuffer、从FileInputStream 获取MappedByteBuffer，其实都从FileChannel里面获取，我们也可以直接创建一个Channel：
@@ -1073,19 +1172,9 @@ MappedByteBuffer mbb =
 
 ### transferto
 
-
-
-
-
  
 
 ###  再来看RocketMQ的刷盘
-
-
-
-
-
-### 到Redis 的刷盘
 
 
 
@@ -1131,3 +1220,5 @@ MappedByteBuffer mbb =
 [16] Why is malloc() considered a library call and not a system call? https://stackoverflow.com/questions/71413587/why-is-malloc-considered-a-library-call-and-not-a-system-call
 
 [17] Chapter 16: The Page Cache and Page Writeback https://github.com/firmianay/Life-long-Learner/blob/master/linux-kernel-development/chapter-16.md
+
+[18] Why does not Redis use linux zero-copy syscall api ? https://github.com/redis/redis/issues/12682
