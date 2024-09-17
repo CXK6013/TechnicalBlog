@@ -815,7 +815,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t > offse
 >
 > mmap()在调用进程的虚拟地址空间中创建一个新的映射。新映射的起始地址由addr参数指定。length参数指定了映射的长度(必须大于0)。
 >
->   After the mmap() call has returned, the file descriptor, fd,   can  be closed immediately without invalidating the mapping.
+> After the mmap() call has returned, the file descriptor, fd,   can  be closed immediately without invalidating the mapping.
 >
 > 在mmap调用返回，文件描述符`fd`可以立即关闭,而不会使映射失效。
 >
@@ -834,9 +834,9 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t > offse
 malloc的注释是:
 
 >   The malloc() function allocates size bytes and returns a pointer to the allocated memory.  The memory is not initialized.  If size
->    is 0, then malloc() returns a unique pointer value that can later  be successfully passed to free().  (See "Nonportable behavior"  for portability issues.)
+>   is 0, then malloc() returns a unique pointer value that can later  be successfully passed to free().  (See "Nonportable behavior"  for portability issues.)
 >
-> malloc函数分配指定字节返回分配内存的指针。内存没有被初始化，如果传入的是0，返回一个唯一的指针值，这个值可以传递给后面的函数。返回的也是一个地址。
+>   malloc函数分配指定字节返回分配内存的指针。内存没有被初始化，如果传入的是0，返回一个唯一的指针值，这个值可以传递给后面的函数。返回的也是一个地址。
 
 #### Windows下的mmap
 
