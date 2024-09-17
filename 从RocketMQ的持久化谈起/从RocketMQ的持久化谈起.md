@@ -35,11 +35,24 @@ Java_java_io_FileOutputStream_writeBytes(JNIEnv *env,
 在io_util.c(文件路径为jdk/src/share/native/java/io/io_util.c)可以看到对应的writeByes调用
 
 ```java
-voidwriteBytes(JNIEnv *env, jobject this, jbyteArray bytes,
+void writeBytes(JNIEnv *env, jobject this, jbyteArray bytes,
            jint off, jint len, jboolean append, jfieldID fid)
-{	// 省略无关代码调用
+    
+{	
+     if (len == 0) {
+        return;
+    } else if (len > BUF_SIZE) {
+        buf = malloc(len);
+        if (buf == NULL) {
+            JNU_ThrowOutOfMemoryError(env, NULL);
+            return;
+        }
+    } else {
+        buf = stackBuf;
+    }
+    // 省略无关代码调用
     if (!(*env)->ExceptionOccurred(env)) {
-  
+  				
             if (append == JNI_TRUE) {
                 n = IO_Append(fd, buf+off, len);
             } else {
