@@ -2,6 +2,89 @@
 
 [TOC]
 
+## 前言
+
+回忆一下我们上面讲的《深入Java IO：文件读写原理（一）》里面讲的内容，我们主要介绍了字节流FileOutputStream和FileOutputStream, 缓冲流BufferedOutputStream和BufferedInputStream。最基础的还是字节流FileOutputStream和FileOutputStream，缓冲流还是在字节流之上做了一层封装:
+
+![](https://a.a2k6.com/gerald/i/2025/01/16/m7g6.png)
+
+而字节流读写数据本质上都是借助操作系统的能力，也就是调用操作系统的api:
+
+```java
+// FileOutputStream
+public void write(byte b[]) throws IOException {
+        writeBytes(b, 0, b.length, append);
+}
+private native void writeBytes(byte b[], int off, int len, boolean append) throws IOException;
+```
+
+```java
+// FileInputStream
+public int read() throws IOException {
+     return read0();
+}
+private native int read0() throws IOException;
+```
+
+在Linux上调用的是：
+
+```c
+//read()函数尝试从文件描述符fd中读取最多count个字节的数据，并将其存储到以buf为起始地址的缓冲区中。
+size_t read(int fd, void buf[.count], size_t count);
+// write() 函数尝试将最多count个字节从buf指向的缓冲区写入到文件描述符fd所引用的文件中
+// 成功调用并不承诺数据到达磁盘
+size_t write(int fd, const void buf[.count], size_t count);
+```
+
+这其实是一个系统调用，所谓系统调用是指应用程序调用操作系统的函数，这些操作系统提供的函数是进程在用户态没有特权和能力完成的操作，当应用进程发起系统调用的时候，会进入到内核态，由操作系统来操作系统资源，完成之后再返回到进程。我们在《深入Java IO：文件读写原理（一）》提到write调用其实是将数据刷新到了page cache中去了，并把对应页面标记为脏页（dirty page）, 然后添加到链表(dirty list), 内核会定期把这个链表里面的内容刷到磁盘上，保证磁盘和缓存的一致性。
+
+![](https://a.a2k6.com/gerald/i/2025/01/16/3a6.png)
+
+这么设计的好处是提升了写数据的性能，但是劣势是磁盘和缓存的一致性降低了。放松一致性的要求来提升性能，这种例子并不少见。为了提升读数据的性能，Linux在page cache里面引入了两个链表：
+
+- active list：活跃链表
+- inactive list：不活跃链表
+
+
+
+![](https://a.a2k6.com/gerald/i/2024/12/21/5kvf2.jpg)
+
+
+
+当内核需要分配内存或者加载磁盘上的文件时，会触发缺页中断(page fault)。新加入的页面会被放入Inactive链表。在内存页面里面有两个标志位：PG_referenced、PG_active。PG_active为1则当前页面在活跃链表里面，PG_active = 0 , 则该页面在非活跃链表里面。如果inactive List上的页面被访问两次，则该页面会被晋升到活跃链表中。
+
+## read/write调用的流程
+
+现在让我们分析一下程序中常见的文件复制流程：本机文件传输、网络文件传输。
+
+### 本机的文件复制
+
+```java
+try(FileInputStream fileInputStream  = new FileInputStream("");
+  FileOutputStream fileOutputStream = new FileOutputStream("")
+) {
+    byte[] readData = new byte[4096];
+    int bytesRead = -1;
+    while( (bytesRead = fileInputStream.read(readData)) != -1){
+        fileOutputStream.write(readData, 0, bytesRead);
+    }
+}
+```
+
+
+
+![](https://a.a2k6.com/gerald/i/2025/01/17/ypv6.png)
+
+
+
+
+
+### 网络文件复制
+
+
+
+
+
 ## 零拷贝
 
 事实上在JDK下面还有更高效的复制文件的方式，这两种方式都依赖于操作系统，也就是mmap和transferTo，我们将分别介绍这两种文件复制方式和其高效的原理。
@@ -737,3 +820,5 @@ MappedByteBuffer mbb =
 [18] Why does not Redis use linux zero-copy syscall api ? https://github.com/redis/redis/issues/12682
 
 [19]   一步一图带你深入理解 Linux 物理内存管理    https://www.cnblogs.com/binlovetech/p/16914715.html
+
+[20] 文件IO原理及Kafka高效读写原因分析 https://www.eula.club/blogs/%E6%96%87%E4%BB%B6IO%E5%8E%9F%E7%90%86%E5%8F%8AKafka%E9%AB%98%E6%95%88%E8%AF%BB%E5%86%99%E5%8E%9F%E5%9B%A0%E5%88%86%E6%9E%90.html#_1-%E5%89%8D%E8%A8%80
