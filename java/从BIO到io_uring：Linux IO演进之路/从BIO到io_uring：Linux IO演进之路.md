@@ -150,8 +150,8 @@ int value = (high << 8) | low;  // 组合为 16 位无符号整数
 有了对报文的基本了解，我们可以开始从数据里面提取报文了。我们目前为了讨论简单就使用\r\n\r\n，作为消息的结束符。这样其实面临以下几个问题:
 
 1.  一次读了两个报文 1\r\n\r\n2\r\n\r\n。 
-2. 1\r\n\r\n，可能读取了多次才读到。
-3. 我们用ByteBuffer来读取数据，假设我们请求分配了4096个字节，但是从中读到的数据超过了容量，所以我们需要扩容。
+2.  1\r\n\r\n，可能读取了多次才读到。
+3.  我们用ByteBuffer来读取数据，假设我们请求分配了4096个字节，但是从中读到的数据超过了容量，所以我们需要扩容。
 
 针对第一个问题，每次读取完毕我们都需要从里面找消息的结尾，针对第二个问题，我们需要一个暂存，存储我们读到的还没有碰到结束符的报文。针对第三个问题，我们需要动态扩容。因此我们从中提取数据的大致程序结构应该是这样的，从SocketChannel里面提取数据，碰到消息结束符，提取消息，交给上层程序。
 
@@ -285,39 +285,301 @@ public class ClientDemo {
 我们的main线程停留在SocketDispatcher.read0这一行，当前的线程状态是Runnable，在Java中处于这个状态的线程有以下三种情况:
 
 1. 已经在JVM中运行
-
 2. 可能在等待系统资源
-
 3. 随时可被调度执行
 
-那么现在的情况属于第二种就是在等数据的到来，在数据到来之前，这个线程被等待在这里。 那为了能够处理多个连接，一种简单的方案是线程池，我们对每一个连接都弃用一个线程来处理。 就好像我们现在有个机场，这个机场效率很低，每一个航班都派了一个人在等飞机是否到来，在飞机到来之前这个人什么都不能干。这无疑造成了资源的浪费，一个连接一个线程。
+如果再把read函数的细节展开，我们会发现其阻塞在了三个阶段，第一个阶段是数据到达网卡，在没有数据到达网卡之前，线程将一直被阻塞在这里。第二个阶段是从网卡到达内核缓冲区。第三个阶段是从内核缓冲区到达用户缓冲区。这个时候读才就绪，read函数就能接着向下执行了。
+
+现在的情况属于第二种就是在等数据的到来，在数据到来之前，这个线程被等待在这里。 那为了能够处理多个连接，一种简单的方案是线程池，我们对每一个连接都弃用一个线程来处理。 就好像我们现在有个机场，这个机场效率很低，每一个航班都派了一个人在等飞机是否到来，在飞机到来之前这个人什么都不能干。这无疑造成了资源的浪费，一个连接一个线程。
 
 那怎么提升效率呢？ 一种方案是引入塔台和飞机建立通讯，当飞机快要降落的时候，飞机主动上报，塔台通知对应的机场工作人员去准备。这也就是我们下面要讲的非阻塞IO。第二种方案是当线程阻塞在这里的时候，将这个线程切出去做别的事情，等到资源就绪的时候，再回复这个任务的执行，这对应协程，我们会在后面讲虚拟线程的实现。
 
 ## 由此引出NIO
+
+在上面我们都是借助类比的思维，将通讯的过程比做迎接飞机，这不本质。现在让我们从最初的Linux调用先前一步一步推导设计，观察如何优化我们的调用。
 
 ###  回顾系统调用
 
 当我们使用Java 的网络库在做网络编程的时候，本质上使用的还是操作系统的能力。也就是调用操作系统提供的api,  在Linux下面BIO调用的几个系统函数如下:
 
 ```C
+int socket(int domain, int type, int protocol);
+int setsockopt(int socket, int level, int option_name,const void *option_value, socklen_t option_len);
+int bind(int sockfd, const struct sockaddr *addr,ocklen_t addrlen);
+int listen(int sockfd, int backlog);
 int accept(int sockfd, struct sockaddr *_Nullable restrict addr,socklen_t *_Nullable restrict addrlen);
-ssize_t recv(int sockfd, void buf[.size], size_t size,int flags);
+ssize_t read(int fd, void buf[.count], size_t count);
+ssize_t send(int sockfd, const void buf[.size], size_t size, int flags);
+```
+
+我们一般通过socket()调用创建Socket，然后通过setsockopt()设置参数，通过bind绑定地址，listen调用开启监听，accept接收连接。read函数读取数据，send函数写数据。
+
+![](https://a.a2k6.com/gerald/i/2025/02/15/vxcl.jpg)
+
+注意到里面有形参里面都有fd，这个fd事实上file descriptor，意为文件描述符。在Linux系统里面一切皆可以看成文件，当我们在操作这些文件的时候就需要获得这些文件的引用。如果用名字来进行查找，我们每操纵一次就要查找一次名字，这无疑效率比较慢。所以Linux规定每一个文件都对应一个索引，这样要操作文件的时候，我们直接找到索引就可以对其进行操作了。 通常文件描述符号是一个非负整数（通常是小整数）。
+
+![](https://a.a2k6.com/gerald/i/2025/02/15/weqg.jpg)
+
+现在我们再来看上面的调用，调用socket函数之后返回一个socket的fd，然后通过setsockopt函数传入fd，做参数设置。然后通过bind函数传入fd，绑定端口。然后listen也是接收fd。accept函数也是接收fd，返回是连接的fd。我们向read函数中传入fd，传入数组，读取数据。一切都是fd。
+
+### 初步设计
+
+那么我们自然就会萌生第一个想法 ， 能否请求操作系统为我们提供一个api，然后我们传入fd，询问是否可读，如果可读我们就进行读取。accept连接之后，拿到fd将其放入到一个集合里面。然后不断的去询问操作系统数据到了没有。
+
+```c
+// list在这里声明
+while(1){
+   int clientFD	= accept(); // 就执行不到语句一
+   list.add(clientFd);   
+   for(int fd : list) {
+     int result = read(); // 这里调用的是加强过的read,
+     if(result == 0){
+          read();
+     }           
+   }  
+}
+```
+
+但上面的代码还是有问题，比如一个连接进来之后，list里面加入了一个fd，然后不断的遍历这个集合，无法执行到语句一。所以我们需要有一个专门处理accept连接的线程，一个专门去轮询操作系统的线程。两个线程之间共享连接fd集合，需要保证是线程安全的。现在看起来很完美，但是这个加强过之后的read函数，仍然是系统调用，仍然需要上下文切换。那能不能把这个read() 函数做进内核里面。 这也就引出了Linux的select调用。
+
+### select与poll
+
+```java
+int select(int nfds, fd_set *_Nullable restrict readfds,
+  fd_set *_Nullable restrict writefds,
+  fd_set *_Nullable restrict exceptfds,
+ struct timeval *_Nullable restrict timeout);
+```
+
+- nfds: 监控的文件描述符集里最大文件描述符加1
+- readfds: 监控有读数据到达文件描述符集合，传入传出参数
+- writefds:  监控有写数据到达文件描述符集合，传入传出参数
+- exceptfds:  监控异常发生到达文件描述符集合，传入传出参数
+
+我们可以将fd理解为一个数组。所以有了select之后，我们的程序就可以这么写:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+
+#define PORT 8888
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 1024
+
+// FD管理器结构
+typedef struct {
+    int server_fd;           // 服务器fd
+    int client_fds[MAX_CLIENTS]; // 客户端fd数组
+    int max_fd;             // 当前最大的fd
+    int client_count;       // 当前客户端数量
+} FDManager;
+
+// 初始化FD管理器
+void init_fd_manager(FDManager *manager) {
+    manager->server_fd = -1;
+    manager->max_fd = -1;
+    manager->client_count = 0;
+    // 初始化客户端数组为-1
+    for(int i = 0; i < MAX_CLIENTS; i++) {
+        manager->client_fds[i] = -1;
+    }
+}
+
+// 更新max_fd
+void update_max_fd(FDManager *manager) {
+    manager->max_fd = manager->server_fd;
+    for(int i = 0; i < MAX_CLIENTS; i++) {
+        if(manager->client_fds[i] > manager->max_fd) {
+            manager->max_fd = manager->client_fds[i];
+        }
+    }
+    printf("Max FD updated to %d\n", manager->max_fd);
+}
+
+// 添加新的客户端fd
+int add_client(FDManager *manager, int client_fd) {
+    if(manager->client_count >= MAX_CLIENTS) {
+        return -1;
+    }
+    
+    for(int i = 0; i < MAX_CLIENTS; i++) {
+        if(manager->client_fds[i] == -1) {
+            manager->client_fds[i] = client_fd;
+            manager->client_count++;
+            if(client_fd > manager->max_fd) {
+                manager->max_fd = client_fd;
+                printf("New max FD: %d\n", manager->max_fd);
+            }
+            return i;
+        }
+    }
+    return -1;
+}
+
+// 移除客户端
+void remove_client(FDManager *manager, int client_fd) {
+    for(int i = 0; i < MAX_CLIENTS; i++) {
+        if(manager->client_fds[i] == client_fd) {
+            close(client_fd);
+            manager->client_fds[i] = -1;
+            manager->client_count--;
+            update_max_fd(manager);
+            printf("Client %d removed\n", client_fd);
+            break;
+        }
+    }
+}
+
+// 主服务器程序
+int main() {
+    FDManager fd_manager;
+    struct sockaddr_in server_addr, client_addr;
+    fd_set read_fds;
+    char buffer[BUFFER_SIZE];
+    // 初始化FD管理器
+    init_fd_manager(&fd_manager);
+    
+    // 创建服务器socket
+    fd_manager.server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(fd_manager.server_fd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    // 设置socket选项
+    int opt = 1;
+    if(setsockopt(fd_manager.server_fd, SOL_SOCKET, SO_REUSEADDR, 
+                  &opt, sizeof(opt)) < 0) {
+        perror("Setsockopt failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    // 配置服务器地址
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+    
+    // 绑定地址
+    if(bind(fd_manager.server_fd, (struct sockaddr *)&server_addr,
+            sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    // 监听连接
+    if(listen(fd_manager.server_fd, 5) < 0) {
+        perror("Listen failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Server listening on port %d\n", PORT);
+    
+    // 更新max_fd
+    fd_manager.max_fd = fd_manager.server_fd;
+    
+    // 主循环
+    while(1) {
+        // 清空fd_set
+        FD_ZERO(&read_fds);
+        
+        // 添加服务器fd到集合
+        FD_SET(fd_manager.server_fd, &read_fds);
+       
+        // 添加所有客户端fd到集合
+        for(int i = 0; i < MAX_CLIENTS; i++) {
+            int client_fd = fd_manager.client_fds[i];
+            if(client_fd > 0) {
+                FD_SET(client_fd, &read_fds);
+            }
+        }
+        
+        printf("Waiting for activity... (max_fd = %d)\n", fd_manager.max_fd);
+        
+        // 使用select等待活动
+        int activity = select(fd_manager.max_fd + 1, &read_fds, NULL, NULL, NULL);
+        if(activity < 0) {
+            perror("Select error");
+            continue;
+        }
+        
+        // 检查服务器fd是否有新连接
+        if(FD_ISSET(fd_manager.server_fd, &read_fds)) {
+            socklen_t addr_len = sizeof(client_addr);
+            int new_client = accept(fd_manager.server_fd, 
+                                  (struct sockaddr *)&client_addr,
+                                  &addr_len);
+                                  
+            if(new_client < 0) {
+                perror("Accept failed");
+                continue;
+            }
+            
+            printf("New connection from %s:%d\n",
+                   inet_ntoa(client_addr.sin_addr),
+                   ntohs(client_addr.sin_port));
+                   
+            // 添加新客户端
+            if(add_client(&fd_manager, new_client) < 0) {
+                printf("Cannot accept more clients\n");
+                close(new_client);
+            }
+        }
+        
+        // 检查客户端fd是否有数据
+        for(int i = 0; i < MAX_CLIENTS; i++) {
+            int client_fd = fd_manager.client_fds[i];
+            
+            if(client_fd > 0 && FD_ISSET(client_fd, &read_fds)) {
+                memset(buffer, 0, BUFFER_SIZE);
+                int read_size = read(client_fd, buffer, BUFFER_SIZE);
+                
+                if(read_size <= 0) {
+                    // 客户端断开连接或错误
+                    printf("Client %d disconnected\n", client_fd);
+                    remove_client(&fd_manager, client_fd);
+                }
+                else {
+                    // 回显数据
+                    buffer[read_size] = '\0';
+                    printf("Received from client %d: %s", client_fd, buffer);
+                    write(client_fd, buffer, strlen(buffer));
+                }
+            }
+        }
+    }
+    
+    // 关闭所有连接
+    for(int i = 0; i < MAX_CLIENTS; i++) {
+        if(fd_manager.client_fds[i] > 0) {
+            close(fd_manager.client_fds[i]);
+        }
+    }
+    close(fd_manager.server_fd);
+    
+    return 0;
+}
 ```
 
 
 
-### select
-
-
-
-### poll和epoll
+###  epoll降临
 
 
 
 ### 小小的总结一下
 
-
+ 我们从第一性原理一次
 
 
 
@@ -355,4 +617,6 @@ ssize_t recv(int sockfd, void buf[.size], size_t size,int flags);
 
 [1] Linux – IO Multiplexing – Select vs Poll vs Epoll  https://devarea.com/linux-io-multiplexing-select-vs-poll-vs-epoll/ 
 
-[2]
+[2 ]  read、write 与recv、send区别 gethostname   https://www.cnblogs.com/Malphite/p/11645067.html
+
+[3] select函数及fd_set介绍   https://www.cnblogs.com/wuyepeng/p/9745573.html
