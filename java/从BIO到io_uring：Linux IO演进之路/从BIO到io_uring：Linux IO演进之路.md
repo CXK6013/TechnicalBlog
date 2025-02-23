@@ -756,3 +756,11 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 [8] fd_set实现原理  https://www.cnblogs.com/HPhone/p/3662011.html 
 
 [9] Panama uring Java https://github.com/dreamlike-ocean/PanamaUring 
+[10] https://github.com/netty/netty/issues/2515 
+[12] io_getevents  https://man7.org/linux/man-pages/man2/io_getevents.2.html
+[13]  Linux 异步 I/O 框架 io_uring：基本原理、程序示例与性能压测（2020） https://arthurchiao.art/blog/intro-to-io-uring-zh/#15-%E5%BC%82%E6%AD%A5-ioaio 
+[14] 新一代异步IO框架 io_uring ｜ 得物技术  https://tech.dewu.com/article?id=40 
+[15] 解密高性能异步I/O：io_uring的魔力与应用  https://tech.dewu.com/article?id=28
+[16] Missing Manuals - io_uring worker pool https://blog.cloudflare.com/missing-manuals-io_uring-worker-pool/
+[17] io_uring-by-example https://github.com/shuveb/io_uring-by-example/blob/master/05_webserver_liburing/main.c
+[18] 透过现象看Java AIO的本质 ｜ 得物技术 https://tech.dewu.com/article?id=28
