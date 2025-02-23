@@ -342,7 +342,7 @@ while(1){
 
 但上面的代码还是有问题，比如一个连接进来之后，list里面加入了一个fd，然后不断的遍历这个集合，无法执行到语句一。所以我们需要有一个专门处理accept连接的线程，一个专门去轮询操作系统的线程。两个线程之间共享连接fd集合，需要保证是线程安全的。现在看起来很完美，但是这个加强过之后的read函数，仍然是系统调用，仍然需要上下文切换。那能不能把这个read() 函数做进内核里面。 这也就引出了Linux的select调用。
 
-### select与poll
+### select和poll
 
 ```java
 int select(int nfds, fd_set *_Nullable restrict readfds,
@@ -386,7 +386,7 @@ typedef struct {
 
 // 初始化FD管理器
 void init_fd_manager(FDManager *manager) {
-    manager->server_fd = -1;
+    manager-> = -1;
     manager->max_fd = -1;
     manager->client_count = 0;
     // 初始化客户端数组为-1
@@ -511,8 +511,7 @@ int main() {
         if(activity < 0) {
             perror("Select error");
             continue;
-        }
-        
+        }      
         // 检查服务器fd是否有新连接
         if(FD_ISSET(fd_manager.server_fd, &read_fds)) {
             socklen_t addr_len = sizeof(client_addr);
@@ -565,39 +564,164 @@ int main() {
             close(fd_manager.client_fds[i]);
         }
     }
-    close(fd_manager.server_fd);
-    
+    close(fd_manager.server_fd);  
     return 0;
 }
 ```
 
+上面的代码我们可以分成以下几个流程:
 
+1. 初始化FD管理器,  FD管理器是我们创建的结构体，里面放置了服务端SocketFD、最大的FD、client_count、然后是一个整型数组。这个数组用于记录客户端的fd，然后我们将其初始化为-1。
+
+   ![](https://a.a2k6.com/gerald/i/2025/02/17/1fq1a9.jpg)
+
+2. 创建服务端Socket，然后在FD管理器里面存储。绑定地址、监听连接。
+
+3. select返回时，会只保留那些就绪的fd。所以如果再循环里面使用select，必须每次调用之前重新初始化。  而与select相关的有以下几个函数：
+
+   - FD_ZERO() 清空fd_set
+   - FD_SET() 将传入的fd 添加进入fd_set里面
+   - FD_ISSET() 判断传入的fd是否在fd_set里面
+
+   4 . 所以我们每次都会将结构体存储的fd，重新填入。 
+
+4. 然后调用select 里面会返回就绪的fd，如果我们服务端的fd还在说明有就绪的连接，然后调用accept函数，获取连接对应的fd。然后将其加入到我们的fd管理器里面。
+
+5. 然后遍历我们存储的fd，是否在select修改之后的fd里面，如果有代表有数据。
+
+![](https://a.a2k6.com/gerald/i/2025/02/17/13fl4.jpg)
+
+select从设计上来说最多只能监听1024个文件描述符，这个限制由后面的poll来完成解除限制。除此之外，我们观察可以发现select调用仍然需要传入fd数组，需要拷贝一份到内核，高并发场景下这样的拷贝消耗的资源是惊人的(可优化为不复制)。在实现上，内核仍然通过遍历的方式检查文件描述符的继续状态，是个同步过程。除此之外，select仅仅返回可读文件描述符个数，具体哪个可读还是需要用户自己遍历。能不能直接返回给用户就绪的文件描述符呢，无需用户做无效的遍历呢？由此就引出epoll。其实我刚开始看一段，看到readyfds的时候我以为里面塞的就是就绪的fd，但其实不是的，所以才提供了FD_SET、FD_ISSET这几个函数。
 
 ###  epoll降临
 
+#### epoll 概述
 
+在参考文档[4]里面我们可以看到，epoll api的功能类似于poll，监控多个文件描述符，检查是否可以进行I/O操作。 epoll支持两种模式:
+
+- 边缘触发 （edge-triggered, ET）
+- 水平触发  (level-triggered, LT)
+
+epoll的核心是epoll实例，它是内核中的一个数据结构，包含以下两部分:
+
+- Interest List 或称 epoll 集合: 包含用户注册的需要监控的文件描述符列表
+- Ready List： 包含当前"就绪"的文件描述符集合。
+
+epoll包含三个系统函数:
+
+- epoll_create: 创建一个新的 `epoll` 实例，并返回一个引用该实例的文件描述符，也就是fd。
+- epoll_ctl: 用于管理 `epoll` 实例的兴趣列表，添加/修改/删除需要监控的文件描述符。
+- epoll_wait: 等待 I/O 事件。如果没有事件可用，则阻塞调用线程。（可以理解为从就绪列表中获取文件描述符事件。）
+
+####  边缘触发和水平触发
+
+那么该怎么理解边缘触发和水平触发呢?  让我们引入一个场景，来体会边缘触发和水平触发的区别:
+
+![](https://a.a2k6.com/gerald/i/2025/02/22/usi1.jpg)
+
+1. 我们拿到了连接的fd，我们这里姑且称之为clientFD，然后用epoll注册对读事件感兴趣
+2. 然后客户端写入2KB数据。
+3. epoll调用返回，返回clientFD，
+4. 然后我们用这个clientFD读1KB数据
+5. 然后再次调用epoll_wait。
+
+如果对于边缘触发来说，在步骤5中的epoll_wait会被挂起，如果在没有新的数据块到来的话。这是因为边缘触发模式只在被监控的文件描述符发生变化时才传递事件。所以如果是边缘触发我们就需要一次将数据都读全。而对于水平触发，再次调用epoll_wait的时候，rfd(读就绪的fd)仍然是就绪的。在参考文档[4]中给了一个示例:
+
+```C
+ #define MAX_EVENTS 10
+  struct epoll_event ev, events[MAX_EVENTS];
+  int listen_sock, conn_sock, nfds, epollfd;
+
+  /* Code to set up listening socket, 'listen_sock',
+              (socket(), bind(), listen()) omitted. */
+
+		epollfd = epoll_create1(0); // 语句一
+		if (epollfd == -1) {
+               perror("epoll_create1");
+               exit(EXIT_FAILURE);
+	   }
+           ev.events = EPOLLIN; // 语句二
+           ev.data.fd = listen_sock;
+           if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_sock, &ev) == -1) { // 语句三
+               perror("epoll_ctl: listen_sock");
+               exit(EXIT_FAILURE);
+           }
+
+           for (;;) {
+               nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+               if (nfds == -1) {
+                   perror("epoll_wait");
+                   exit(EXIT_FAILURE);
+               }
+
+               for (n = 0; n < nfds; ++n) {
+                   if (events[n].data.fd == listen_sock) {
+                       conn_sock = accept(listen_sock,
+                                          (struct sockaddr *) &addr, &addrlen);
+                       if (conn_sock == -1) {
+                           perror("accept");
+                           exit(EXIT_FAILURE);
+                       }
+                       setnonblocking(conn_sock); // 设置非阻塞模式
+                       ev.events = EPOLLIN | EPOLLET; // 设置对事件感兴趣、边缘触发
+                       ev.data.fd = conn_sock;
+                       if (epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,
+                                   &ev) == -1) {
+                           perror("epoll_ctl: conn_sock");
+                           exit(EXIT_FAILURE);
+                       }
+                   } else {
+                       do_use_fd(events[n].data.fd);
+                   }
+               }
+           }
+```
+
+这里出现了一个新的结构体，也就是epoll_event，epoll_event的声明如下:
+
+```java
+struct epoll_event { uint32_t events; /* Epoll events */ epoll_data_t data; /* User data variable */ }; 
+union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef union epoll_data epoll_data_t;
+```
+
+在结构体中的events的变量用来代表Epoll的事件，那这些事件对应的值去哪里找呢？ 在 Linux manual page里面我们去在epoll_create、epoll_ctl、epoll_wait找函数说明就可以了。我是在epoll_ctl里面找到的:
+
+> The events member of the epoll_event structure is a bit mask composed by ORing together zero or more event types, returned by epoll_wait(2), and input flags, which affect its behaviour, but aren't returned.
+
+`epoll_event` 结构中的 `events` 成员是一个**位掩码**，通过对零个或多个事件类型进行 OR 运算组合而成。这些事件类型会通过 `epoll_wait(2)` 返回。此外，还可以包含输入标志，这些标志影响行为，但不会被返回。
+
+这就解释通了   ev.events = EPOLLIN | EPOLLET;  这句，EPOLLIN代表对读事件就绪感兴趣，EPOLLET边缘触发。或运算有1保留为1，我们只用依次检验对应二进制数字的1就可以知道，触发的模式和感兴趣的事件。
+
+常见的events候选值有以下几个:
+
+- EPOLLIN：可读
+- EPOLLOUT:  可写，注意在边缘触发模式下面，只在不可写到写的转变时刻，才会触发一次。而在水平触发下面, 只要Socket的发送缓冲区还有空间，这个事件会被频繁触发。除非写入的数据超过了Socket 发送缓冲区的剩余空间，这会返回EAGAIN。
+- EPOLLET:  为关联的fd设置边缘触发，EPOLL默认是水平触发
+- EPOLLONESHOT:  将关联的FD设置为一次通知模式，该文件描述符会从关注列表中被禁用，epoll 接口也将不再报告其他事件。  用户必须调用 epoll_ctl() 并使用 EPOLL_CTL_MOD 来重新激活该文件描述符，并设置新的事件掩码。默认模式我们注册一次会通知多次，减少fd发复制，我们一般称之为multishot。
+
+现在我们就可以读懂上面的程序了，语句一调用epoll_create1，创建epoll的FD，然后用ev来临时存储一下，然后设置感兴趣的事件。通过epoll_ctl请求epoll的fd对服务端的socket进行监控，设置对读事件感兴趣。如果有对应的事件，epoll_wait会修改我们传入的events数组。我们遍历这个数组就可以去读，去接受连接了。到现在epoll_wait返回的时候，我们就知道就绪的fd了，但是我们还是需要主动的去读。
 
 ### 小小的总结一下
 
- 我们从第一性原理一次
+ 我们从BIO逐步走向了IO多路复用，BIO的阻塞其实阻塞在read调用上，一直在等数据的到来，这是最本质的解释。我们可以通过thread dump观测到这一点。解决这一点其实也简单，我们一个连接一个线程，使用线程池。但在很多活跃连接的情况下，这会难以扩展，我们扩充硬件配置，可以获得更多的线程。但是对应的线程上下文切换也是一个成本。于是我们就希望让操作系统自己去监控，希望操作系统出api，我们在对应的fd就绪之后，才自己去读。由此就引出了select和poll。但poll也是不完美的，我们需要去遍历看看，由此就引出了epoll的降临，内核保存了一份fd，我们只需要通过对epoll进行添加fd、修改fd即可。我们就省去了自己遍历fd的成本。那不能再好一些呢，现在我们还是主动的去读的，我们还需要传入一个数组，那不能我们传入我们fd和数组，就绪的时候直接读好给我们呢。由此就引入了AIO和io_uring。
 
+## 由此引出AIO 和 io_uring
 
-
-### 那在Java里面 NIO该怎么写
-
-
-
-
-
-
-
-## 由此引出AIO
+所谓AIO的A，也就是asynchronous 异步的意思是，在某种情况下AIO有着不同的语义，一种AIO的语义是将你的回调函数传递给系统，当有事件发生的时候，系统调用你的回调函数。Java中的AIO就是这种语义:
 
 
 
 
 
-## 由此引出io_uring
+我们将关心的事件和fd传入系统接口，当对应的事件就绪，会通知我们。早在Linux 2.6，内核就引入了异步I/O(asynchronous I/O) 接口，基本有
+
+
+
+
+
+
+
+## 回头看Java中的AIO
 
 
 
@@ -620,3 +744,15 @@ int main() {
 [2 ]  read、write 与recv、send区别 gethostname   https://www.cnblogs.com/Malphite/p/11645067.html
 
 [3] select函数及fd_set介绍   https://www.cnblogs.com/wuyepeng/p/9745573.html
+
+[4]  epoll(7) — Linux manual page  https://man7.org/linux/man-pages/man7/epoll.7.html
+
+[5] epoll_in_out_test https://github.com/ustcdane/epoll_in_out_test?tab=readme-ov-file
+
+[6] Why you should use io_uring for network I/O https://developers.redhat.com/articles/2023/04/12/why-you-should-use-iouring-network-io 
+
+[7]  How to find the socket buffer size of linux  https://stackoverflow.com/questions/7865069/how-to-find-the-socket-buffer-size-of-linux
+
+[8] fd_set实现原理  https://www.cnblogs.com/HPhone/p/3662011.html 
+
+[9] Panama uring Java https://github.com/dreamlike-ocean/PanamaUring 
