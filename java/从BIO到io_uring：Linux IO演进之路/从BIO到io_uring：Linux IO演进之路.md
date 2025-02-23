@@ -765,3 +765,4 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 [17] io_uring-by-example https://github.com/shuveb/io_uring-by-example/blob/master/05_webserver_liburing/main.c
 [18] 透过现象看Java AIO的本质 ｜ 得物技术 https://tech.dewu.com/article?id=28
 [19] Why you should use io_uring for network I/O https://developers.redhat.com/articles/2023/04/12/why-you-should-use-iouring-network-io
+[20] What's the difference between event-driven and asynchronous? Between epoll and AIO? https://stackoverflow.com/questions/5844955/whats-the-difference-between-event-driven-and-asynchronous-between-epoll-and-a
