@@ -32,7 +32,7 @@ private static void bio() throws Exception {
 
 ![](https://a.a2k6.com/gerald/i/2025/02/11/2d7.png)
 
-第二次握手进入办连接队列，三次握手的最后一次ACK到达，连接就从半连接队列移动到全连接队列中。然后上层的程序发起accept调用，就可以拿到连接的抽象，从连接中读写数据。这个accept队列的大小就是由backlog指定。我们接着写程序，注意到上面我们建立连接的过程中出现了bind、listen，但是我们上面写的代码里面只有bind, 这是因为在调用bind的时候，自动调用了listen:
+第二次握手进入半连接队列，三次握手的最后一次ACK到达，连接就从半连接队列移动到全连接队列中。然后上层的程序发起accept调用，就可以拿到连接的抽象，从连接中读写数据。这个accept队列的大小就是由backlog指定。我们接着写程序，注意到上面我们建立连接的过程中出现了bind、listen，但是我们上面写的代码里面只有bind, 这是因为在调用bind的时候，自动调用了listen:
 
 ```java
 @Override
