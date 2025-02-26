@@ -2,8 +2,6 @@
 
 [TOC]
 
-
-
 ## 先从用BIO构建一个小的服务器软件骨架
 
 最近想重新梳理一下自己对BIO、NIO 、AIO、IO_Uring的理解，让我们来先说BIO，所BIO就是 Blocking IO，那究竟Blocking在什么地方呢？ 让我们先开始写代码，首先我们需要开启一个ServerSocketChannel，驻留在对应的端口上，监听连接: 
@@ -107,9 +105,9 @@ private SocketAddress netBind(SocketAddress local, int backlog) throws IOExcepti
 
 自定义长度: 规定前几个字节是表示长度，我们只需要向后读数据长度就行了。
 
-​	![](https://a.a2k6.com/gerald/i/2025/02/12/3offm.png)
-
-​	   我们规定byte数组的前两位代表报文的长度，下一个问题来了，我们知道Java的数据类型是有符号数，byte占一个字节，一个字节是八位, 表达无符号数，最小是0，最大是255, 但是在 Java中byte是有符号整数，数据范围是-128到127。那如果我想充分的利用这个字节，该如何将负数映射到对应的正数呢？ 这就要涉及Java中整数的二进制表示了，Java中的整数是用补码来表示的，在补码系统里面，最高位是符号位，0为正，1为负。对于负数，补码是其绝对值的二进制取反后加1，那么-127的绝对值是127,127对应的二进制是0111 1111，取反后是1000 0000，加1之后是1000 0001。
+	![](https://a.a2k6.com/gerald/i/2025/02/12/3offm.png)
+	
+	   我们规定byte数组的前两位代表报文的长度，下一个问题来了，我们知道Java的数据类型是有符号数，byte占一个字节，一个字节是八位, 表达无符号数，最小是0，最大是255, 但是在 Java中byte是有符号整数，数据范围是-128到127。那如果我想充分的利用这个字节，该如何将负数映射到对应的正数呢？ 这就要涉及Java中整数的二进制表示了，Java中的整数是用补码来表示的，在补码系统里面，最高位是符号位，0为正，1为负。对于负数，补码是其绝对值的二进制取反后加1，那么-127的绝对值是127,127对应的二进制是0111 1111，取反后是1000 0000，加1之后是1000 0001。
 
 ![](https://a.a2k6.com/gerald/i/2025/02/13/2zh7.png)
 
@@ -697,7 +695,7 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 - EPOLLIN：可读
 - EPOLLOUT:  可写，注意在边缘触发模式下面，只在不可写到写的转变时刻，才会触发一次。而在水平触发下面, 只要Socket的发送缓冲区还有空间，这个事件会被频繁触发。除非写入的数据超过了Socket 发送缓冲区的剩余空间，这会返回EAGAIN。
 - EPOLLET:  为关联的fd设置边缘触发，EPOLL默认是水平触发
-- EPOLLONESHOT:  将关联的FD设置为一次通知模式，该文件描述符会从关注列表中被禁用，epoll 接口也将不再报告其他事件。  用户必须调用 epoll_ctl() 并使用 EPOLL_CTL_MOD 来重新激活该文件描述符，并设置新的事件掩码。默认模式我们注册一次会通知多次，减少fd发复制，我们一般称之为multishot。
+- EPOLLONESHOT:  将关联的FD设置为一次通知模式，该文件描述符会从关注列表中被禁用，epoll 接口也将不再报告其他事件。  用户必须调用 epoll_ctl() 并使用 EPOLL_CTL_MOD 来重新激活该文件描述符，并设置新的事件掩码。默认模式我们注册一次，会通知多次，减少fd发复制，我们一般称之为multishot。
 
 现在我们就可以读懂上面的程序了，语句一调用epoll_create1，创建epoll的FD，然后用ev来临时存储一下，然后设置感兴趣的事件。通过epoll_ctl请求epoll的fd对服务端的socket进行监控，设置对读事件感兴趣。如果有对应的事件，epoll_wait会修改我们传入的events数组。我们遍历这个数组就可以去读，去接受连接了。到现在epoll_wait返回的时候，我们就知道就绪的fd了，但是我们还是需要主动的去读。
 
@@ -705,37 +703,217 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 
  我们从BIO逐步走向了IO多路复用，BIO的阻塞其实阻塞在read调用上，一直在等数据的到来，这是最本质的解释。我们可以通过thread dump观测到这一点。解决这一点其实也简单，我们一个连接一个线程，使用线程池。但在很多活跃连接的情况下，这会难以扩展，我们扩充硬件配置，可以获得更多的线程。但是对应的线程上下文切换也是一个成本。于是我们就希望让操作系统自己去监控，希望操作系统出api，我们在对应的fd就绪之后，才自己去读。由此就引出了select和poll。但poll也是不完美的，我们需要去遍历看看，由此就引出了epoll的降临，内核保存了一份fd，我们只需要通过对epoll进行添加fd、修改fd即可。我们就省去了自己遍历fd的成本。那不能再好一些呢，现在我们还是主动的去读的，我们还需要传入一个数组，那不能我们传入我们fd和数组，就绪的时候直接读好给我们呢。由此就引入了AIO和io_uring。
 
-## 由此引出AIO 和 io_uring
+## 由此引出AIO 到IO演进之路
 
 所谓AIO的A，也就是asynchronous 异步的意思是，在某种情况下AIO有着不同的语义，一种AIO的语义是将你的回调函数传递给系统，当有事件发生的时候，系统调用你的回调函数。Java中的AIO就是这种语义:
 
+```java
+public class AIOServer {
+    private static final int PORT = 8080;
+
+    public static void main(String[] args) {
+        try {
+            // 1. 创建并绑定异步服务器通道
+            AsynchronousServerSocketChannel serverChannel =
+                    AsynchronousServerSocketChannel.open().bind(new InetSocketAddress(PORT));
+            System.out.println("AIO Server started on port " + PORT);
+
+            // 2. 异步接受客户端连接
+            serverChannel.accept(null, new CompletionHandler<AsynchronousSocketChannel, Void>() {
+                @Override
+                public void completed(AsynchronousSocketChannel clientChannel, Void attachment) {
+                    // 继续接受下一个客户端连接（异步循环）
+                    serverChannel.accept(null, this);
+                    // 处理当前客户端
+                    handleClient(clientChannel);
+                }
+
+                @Override
+                public void failed(Throwable exc, Void attachment) {
+                    System.err.println("Accept failed: " + exc.getMessage());
+                }
+            });
+            // 3. 防止主线程退出
+            Thread.currentThread().join();
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void handleClient(AsynchronousSocketChannel clientChannel) {
+        // 4. 创建缓冲区读取客户端数据       
+        ByteBuffer buffer = ByteBuffer.allocate(1024);
+        // 5. 异步读取数据
+        clientChannel.read(buffer, null, new CompletionHandler<Integer, Void>() {
+            // 外部引用，用于递归调用
+            CompletionHandler<Integer, Void> thisOuter = this;
+            @Override
+            public void completed(Integer bytesRead, Void attachment) {
+                if (bytesRead < 0) { // 客户端关闭连接
+                    closeChannel(clientChannel);
+                    return;
+                }
+                // 6. 处理读取到的数据
+                buffer.flip();
+                String received = new String(buffer.array(), 0, bytesRead).trim();
+                System.out.println("Received: " + received);
+                // 7. 准备并异步发送响应
+                String response = "Server response: Hello, " + received + "!\n";
+                ByteBuffer responseBuffer = ByteBuffer.wrap(response.getBytes());
+                clientChannel.write(responseBuffer, null, new CompletionHandler<Integer, Void>() {
+                    @Override
+                    public void completed(Integer bytesWritten, Void attachment) {
+                        buffer.clear();
+                        // 8. 继续读取下一条消息
+                        clientChannel.read(buffer, null, thisOuter);
+                    }
+                    @Override
+                    public void failed(Throwable exc, Void attachment) {
+                        System.err.println("Write failed: " + exc.getMessage());
+                        closeChannel(clientChannel);
+                    }
+                });
+            }
+            @Override
+            public void failed(Throwable exc, Void attachment) {
+                System.err.println("Read failed: " + exc.getMessage());
+                closeChannel(clientChannel);
+            }
+        });
+    }
+
+    private static void closeChannel(AsynchronousSocketChannel channel) {
+        try {
+            channel.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+AsynchronousServerSocketChannel的accept方法提供了函数参数，要求是CompletionHandler类型，当连接建立的时候，自动触发completed方法，然后我们接着在AsynchronousServerSocketChannel实例上注册自身，不断接收连接。然后我们拿到AsynchronousSocketChannel之后，同样在AsynchronousSocketChannel的read方法上注册CompletionHandler函数。
+
+![](https://a.a2k6.com/gerald/i/2025/02/26/lp1h.png)
+
+但是我们回想一下内核通知用户程序的几种方式，最为常见的就是同步系统调用，当系统调用返回的时候就代表内核完成了任务。除此之外常见的还有信号（Signals)机制 , 信号从字面意思上就是内核完成任务之后向应用程序发一个信号，我们可以注册对应的函数。 但是注册的函数只能入参是int，无返回值:
+
+```C
+void handler_name(int signum) {}
+```
+
+用信号这种方式来实现异步IO无疑限制太多，Java的AsynchronousSocketChannel本质上还是用Epoll来模拟的，所以本质上我们还是将其归类的同步非阻塞IO中(依据来自参考资料[18]里面, 里面有详细的考证)。难道我们要让操作系统给我们开口子，定制更为通用的接口？  这似乎并不是一个很好的思路。就算能实现也不适应现在越来越快的硬件，因为要借助中断。但是随着设备越来越快，轮询要快于中断模式。
+
+在Linux 2.6就引入了异步IO，也就是io_submit和io_getevents，简单的说io_submit提交IO请求，io_getevents返回就绪的事件。这里其实Linux的方式就是轮询。但这套api最初是为数据库软件设计的，只支持O_DIRECT模式，也就是绕过高速缓存直接读写设备，我们在《深入Java IO：文件读写原理（一）》提到数据库需要自己的缓存管理，操作系统的缓存管理对于数据库来说太粗糙了，缺页异常会导致性能抖动，这不稳定，于是数据库软件希望可以绕开磁盘自己管理缓存。对于非常规的非数据库应用是无用的，除此之外这组接口在设计的时候没有考虑扩展，虽然我们也确实可以扩展，但这就有点复杂了。虽然说从技术上来说是非阻塞的，但实际很多原因都会导致它阻塞。
+
+Linus也对这组接口非常不满意，在参考资料[23]可以看到，我们这里只放一小段:
+
+> So I think this is ridiculously ugly.
+>
+> AIO is a horrible ad-hoc design, with the main excuse being “other, less gifted people, made that design, and we are implementing it for compatibility because database people — who seldom have any shred of taste — actually use
+
+所以我认为这是荒谬至极的丑陋设计。AIO 是一个可怕的临时凑合设计，其主要借口是"其他不那么有天赋的人做了这个设计，而我们为了兼容性而实现它，因为数据库领域的人 —— 他们几乎从不具备任何品味 —— 实际上在使用它"。
+
+到现在我们已经大致理清楚了，Linux 的IO演进之路，最开始是阻塞式系统调用，阻塞在read调用上或者accept调用上，慢慢的操作系统上的软件发现这不符合要求，于是开始添加异步接口。网络领域(network socket) 是添加的异步接口，不断的轮询请求是否完成。而存储IO领域，则是添加了一个定制版的异步接口。
+
+## 由此引出io_uring
+
+这就是Linux I/O的演进历史，各类软件 都根据自己的需要请求内核添加功能和接口，各自管各自的，并没有多少前瞻性。由此就引出了io_uring，io_uring来自资深内核开发者Jens Axboe ，这项工作来自于一个简单的观察，中断驱动(interrup-driven)模式效率已经低于轮询模式(polling for completions)。所以有些想法看起来很美妙，但确实是不符合实际的，从api的设计上来说，我们向对应的事件注册函数，事件满足之后触发， 这样看起来写起来简单，读起来容易读。但是我们贴近底层看的话，引入这种机制性能并不佳，而且难以维护。我们其实可以选择底层轮询，在对外层暴露成事件驱动的模式。io_uring的处理结构如下图所示：
+
+![](https://a.a2k6.com/gerald/i/2025/02/26/usav.png)
 
 
 
+一般我们通过io_uring_setup创建io_uring实例，每个io_uring实例都有两个环形队列，在内核和应用程序之间共享:
 
-我们将关心的事件和fd传入系统接口，当对应的事件就绪，会通知我们。早在Linux 2.6，内核就引入了异步I/O(asynchronous I/O) 接口，基本有
+- 提交队列: submission queue (SQ)
+- 完成队列: completion queue (CQ)
 
+这两个队列都是单生产者、单消费者，size是2的幂词，都提供无锁接口，内部使用内存屏障做同步。应用发起的IO请求会先进入到SQ里面，更新SQ尾指针。内核消费SQ 节点，更新SQ 头节点。内核尾完成的一个或多个请求创建CQ节点，更新CQ指针。应用消费CQ节点，更新CQ的头指针。完成事件可能以任意顺序到达，到总是与特定的SQ节点相关联。消费CQ中元素的过程无需切换到内核态。
 
+io_uring支持三种工作模式:
 
+1.  中断驱动模式,  这是默认模式，不需要设置特殊标志。I/O 完成时通过硬件中断通知系统，应用程序通过 `io_uring_enter()` 提交请求，然后检查 CQ 判断完成状态。
 
+2.  轮询模式（IORING_SETUP_IOPOLL），通过轮询方式检测IO完成，延迟更低，但是会更消耗CPU，需要设备和文件系统支持轮询功能只适用于使用 O_DIRECT 标志打开的文件描述符。
+3.  内核轮询模式，通过 `IORING_SETUP_SQPOLL` 标志开启 ，创建内核线程轮询 SQ，减少系统调用开销允许应用程序无需切换到内核态即可提交 I/O 请求
 
+如果你觉得io_uring太繁琐，这里有一个liburing 的库，将io_uring封装的更加便捷，我们可以参考文档[17] 来学习io_uring的使用:
 
+```c
+void server_loop(int server_socket) {
+    struct io_uring_cqe *cqe;
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+    add_accept_request(server_socket, &client_addr, &client_addr_len);
+    while (1) {
+        int ret = io_uring_wait_cqe(&ring, &cqe); // 从完成队列里面取事件
+        if (ret < 0)
+            fatal_error("io_uring_wait_cqe");
+        struct request *req = (struct request *) cqe->user_data;
+        if (cqe->res < 0) {
+            fprintf(stderr, "Async request failed: %s for event: %d\n",
+                    strerror(-cqe->res), req->event_type);
+            exit(1);
+        }
+        // 根据类型来触发对应的操作,连accept调用都省略了
+        switch (req->event_type) {
+            case EVENT_TYPE_ACCEPT:
+                add_accept_request(server_socket, &client_addr, &client_addr_len);
+                add_read_request(cqe->res);
+                free(req);
+                break;
+            case EVENT_TYPE_READ:
+                if (!cqe->res) {
+                    fprintf(stderr, "Empty request!\n");
+                    break;
+                }
+                handle_client_request(req);
+                free(req->iov[0].iov_base);
+                free(req);
+                break;
+            case EVENT_TYPE_WRITE:
+                for (int i = 0; i < req->iovec_count; i++) {
+                    free(req->iov[i].iov_base);
+                }
+                close(req->client_socket);
+                free(req);
+                break;
+        }
+        /* Mark this request as processed */
+        io_uring_cqe_seen(&ring, cqe);
+    }
+}
+int add_read_request(int client_socket) {
+    // 从队列里面获取一个位置
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    // 为请求分配内存
+    struct request *req = malloc(sizeof(*req) + sizeof(struct iovec));   
+    //  为接收数据分配缓冲区，大小为READ_SZ
+    req->iov[0].iov_base = malloc(READ_SZ);
+    req->iov[0].iov_len = READ_SZ;
+    req->event_type = EVENT_TYPE_READ;
+    req->client_socket = client_socket;
+    memset(req->iov[0].iov_base, 0, READ_SZ);
+    /* Linux kernel 5.5 has support for readv, but not for recv() or read() */
+    io_uring_prep_readv(sqe, client_socket, &req->iov[0], 1, 0);
+    io_uring_sqe_set_data(sqe, req);
+    io_uring_submit(&ring);
+    return 0;
+}
+```
 
-## 回头看Java中的AIO
-
-
-
-
+通过上面的示例，我们可以发现，在io_uring下面，我们可以不再主动的接收连接，主动的去read数据。省掉了系统调用，但这个时候就有人问了，那我们提前申请了内存，那这样连接多的时候会不会浪费内存。io_uring也提供了缓冲区机制，也就是io_uring_prep_provide_buffers，可以复用内存。
 
 ## 总结一下
 
+到现在我们已经从bio梳理到了io_uring, 所谓bio就是在blocking在read上面，如果我们只有一个线程，在数据没到达内核缓冲区之前，就会阻塞在这里。对此我们可以使用线程池来解决这个问题，一个线程专门处理连接，连接接受之后，提交给线程池去处理，这就颇有点 one thread per request的感觉。这会难以扩展，随着连接的增多，我们的线程不能无限增长。于是我们就希望内核为我们提供这样的接口，我们告诉内核需要监控的fd，fd是对文件的抽象，在事件就绪的时候，内核告知我们。这也就是select和epoll，这看起来将问题缓解了一些，但是还不够原因在于我们还需要自己维护一个fd，我们传入的fd集合到内核还需要复制一下，这在高频的读写下仍然是昂贵的成本，由此就引出了epoll，由内核直接告知我们哪个fd就绪，epoll的功能非常丰富，我们可以选择水平触发和边缘触发。
 
+边缘触发模式只在被监控的文件描述符发生变化时才传递事件，比如说客户端发了2KB数据，读了1KB，再次调用epoll_wait，不会返回就绪的事件。而水平触发只要满足条件就会一直触发。所以在边缘触发的情况下，只有在不可读转为可读的情况下，才会再度返回就绪事件。除此之外对于就绪的fd，EPOLL也提供了oneshot和multishot，我们姑且可以理解为一次触发和多次触发，对于就绪的fd，oneshot触发一次就会自动移除这个fd监控，需要我们再添加。而multishot则会多次触发，那么触发一次之后，我们处理过之后就不会再触发。Netty默认是边缘触发，这能减少触发次数，毕竟在Netty里面是一次读取数据。但是Epoll仍然不够完美，我们仍然需要主动的accept，主动的去读数据。
 
+由此就引出了io_uring， 操作系统总是根据应用软件的需求来引入特性，一般的非数据库应用软件添加的异步接口和数据库软件添加的异步接口，设计目标并不一致，数据库软件希望绕开缓存，但非数据库软件希望有效的利用缓存。尽管io_submit已经开始支持epoll，但扩展和维护都相当复杂。于是就引出了io_uring, io_uring的推出基于以下事实，随着设备越来越快，轮询开始快于中断。io_uring统一了网络io和磁盘io。这也就是最新的异步IO，这个异步可以体现在减少系统调用上，我们只用处理就绪的事件上，减少read和accept的系统调用次数。
 
-
-
-
-
+但是AIO还有另外一重语义，将你的回调函数传递给系统，当有事件发生的时候，系统调用你的回调函数。我们可以传递函数指针给操作系统，但是操作系统回调应用程序比较复杂，往往需要借助于中断，在设备越来越快的今天，轮询要比中断快，因此我们可以设计的底层调用是轮询形式，然后在包装成AIO的语义。
 
 ## 参考资料
 
@@ -766,3 +944,11 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 [18] 透过现象看Java AIO的本质 ｜ 得物技术 https://tech.dewu.com/article?id=28
 [19] Why you should use io_uring for network I/O https://developers.redhat.com/articles/2023/04/12/why-you-should-use-iouring-network-io
 [20] What's the difference between event-driven and asynchronous? Between epoll and AIO? https://stackoverflow.com/questions/5844955/whats-the-difference-between-event-driven-and-asynchronous-between-epoll-and-a
+
+[21]  signal & system call usage & relationship https://stackoverflow.com/questions/32708830/signal-system-call-usage-relationship
+
+[22] linux-aio https://github.com/littledan/linux-aio 
+
+[23] Re: [PATCH 09/13] aio: add support for async openat() https://lwn.net/Articles/671657/
+
+[24] io_uring and networking in 2023 https://github.com/axboe/liburing/wiki/io_uring-and-networking-in-2023
