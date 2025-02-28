@@ -1,4 +1,4 @@
-# 从BIO到io_uring: IO模型的演进之路
+# 从bio到io_uring:IO模型的演进之路
 
 [TOC]
 
@@ -102,7 +102,7 @@ private SocketAddress netBind(SocketAddress local, int backlog) throws IOExcepti
 
 现在让我们考虑如何读数据，一般来说，服务端程序总是根据客户端的请求报文回应数据。由于TCP属于流式协议，所谓流式协议就是应用程序通过TCP协议发送给服务端的数据包，是没有边界的，假设客户端发送了两个hello world，服务端可能一次收到两个helloworld，也可能分多次收到。所以就需要应用层确定消息边界, 我们需要设计应用层的报文格式，那其实一般的应用层报文就有以下几种格式，一部分用于指示需要读取的数据长度，一部分是实际的报文内容。我们称之为自定义长度的报文，
 
-#### 自定义长度
+### 自定义长度
 
 自定义长度: 规定前几个字节是表示长度，我们只需要向后读数据长度就行了。
 
@@ -293,6 +293,8 @@ public class ClientDemo {
 
 那怎么提升效率呢？ 一种方案是引入塔台和飞机建立通讯，当飞机快要降落的时候，飞机主动上报，塔台通知对应的机场工作人员去准备。这也就是我们下面要讲的非阻塞IO。第二种方案是当线程阻塞在这里的时候，将这个线程切出去做别的事情，等到资源就绪的时候，再恢复这个任务的执行，这对应协程，我们会在后面讲虚拟线程的实现。
 
+
+
 ## 由此引出NIO
 
 在上面我们都是借助类比的思维，将通讯的过程比做迎接飞机，这不本质。现在让我们从最初的Linux调用先前一步一步推导设计，观察如何优化我们的调用。
@@ -355,7 +357,9 @@ int select(int nfds, fd_set *_Nullable restrict readfds,
 - writefds:  监控有写数据到达文件描述符集合，传入传出参数
 - exceptfds:  监控异常发生到达文件描述符集合，传入传出参数
 
-我们可以将fd理解为一个数组。所以有了select之后，我们的程序就可以这么写:
+我们可以将fd理解为一个数组。所以有了select之后，我们的程序就可以这么写，考虑到有些同学喜欢看图，这里我们先上一个大致的流程图， 流程图下面就是代码:
+
+![](https://a.a2k6.com/gerald/i/2025/02/28/405s.png)
 
 ```c
 #include <stdio.h>
@@ -624,7 +628,9 @@ epoll包含三个系统函数:
 4. 然后我们用这个clientFD读1KB数据
 5. 然后再次调用epoll_wait。
 
-如果对于边缘触发来说，在步骤5中的epoll_wait会被挂起，如果在没有新的数据块到来的话。这是因为边缘触发模式只在被监控的文件描述符发生变化时才传递事件。所以如果是边缘触发我们就需要一次将数据都读全。而对于水平触发，再次调用epoll_wait的时候，rfd(读就绪的fd)仍然是就绪的。在参考文档[4]中给了一个示例:
+如果对于边缘触发来说，在步骤5中的epoll_wait会被挂起，如果在没有新的数据块到来的话。这是因为边缘触发模式只在被监控的文件描述符发生变化时才传递事件。所以如果是边缘触发我们就需要一次将数据都读全。而对于水平触发，再次调用epoll_wait的时候，rfd(读就绪的fd)仍然是就绪的。在参考文档[4]中给了一个示例, 我这里也准备了流程图，如果觉得代码有点难懂可以先看流程图理解: 
+
+![](https://a.a2k6.com/gerald/i/2025/02/28/s40k.png)
 
 ```C
  #define MAX_EVENTS 10
@@ -696,9 +702,109 @@ union epoll_data { void *ptr; int fd; uint32_t u32; uint64_t u64; }; typedef uni
 - EPOLLIN：可读
 - EPOLLOUT:  可写，注意在边缘触发模式下面，只在不可写到写的转变时刻，才会触发一次。而在水平触发下面, 只要Socket的发送缓冲区还有空间，这个事件会被频繁触发。除非写入的数据超过了Socket 发送缓冲区的剩余空间，这会返回EAGAIN。
 - EPOLLET:  为关联的fd设置边缘触发，EPOLL默认是水平触发
-- EPOLLONESHOT:  将关联的FD设置为一次通知模式，该文件描述符会从关注列表中被禁用，epoll 接口也将不再报告其他事件。  用户必须调用 epoll_ctl() 并使用 EPOLL_CTL_MOD 来重新激活该文件描述符，并设置新的事件掩码。默认模式我们注册一次，会通知多次，减少fd发复制，我们一般称之为multishot。
+- EPOLLONESHOT:  将关联的FD设置为一次通知模式，该文件描述符会从关注列表中被禁用，epoll 接口也将不再报告其他事件。  用户必须调用 epoll_ctl() 并使用 EPOLL_CTL_MOD 来重新激活该文件描述符，并设置新的事件掩码。默认模式我们注册一次，会通知多次，减少fd的复制，我们一般称之为multishot。
 
 现在我们就可以读懂上面的程序了，语句一调用epoll_create1，创建epoll的FD，然后用ev来临时存储一下，然后设置感兴趣的事件。通过epoll_ctl请求epoll的fd对服务端的socket进行监控，设置对读事件感兴趣。如果有对应的事件，epoll_wait会修改我们传入的events数组。我们遍历这个数组就可以去读，去接受连接了。到现在epoll_wait返回的时候，我们就知道就绪的fd了，但是我们还是需要主动的去读。
+
+### 我的一些不理解的地方
+
+我的理解是边缘触发关注变化，而水平触发关注事件是否被满足。如果边缘触发配合oneshot，会是什么呢，我的预测是我们read一次，epoll丢失了对这个fd的监控，需要我们通过EPOLL_CTL_MOD 请求epoll实例重新关注这个fd。有了预测之后，我们就需要验证，那我们该怎么验证呢。我们设置边缘触发和oneshot，看对应的客户端触发读数据的时候，epoll_wait能不能返回这个fd。我认为就算是十分显然的预测，如果有疑问，那我们也应当有能力来验证我们预测, 我们设计的例子如下，服务端设置为边缘触发和oneshot，客户端第一次发送数据，能读到，第二次发数据就读不到了。考虑到有些同学对c有点陌生，我还是先配了图，后配代码。
+
+![](https://a.a2k6.com/gerald/i/2025/02/28/5nawf.png)
+
+```c
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+
+#define PORT 12345
+#define MAX_EVENTS 10
+
+int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+int main() {
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(PORT);
+    bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
+    listen(listen_fd, 5);
+    set_nonblocking(listen_fd);
+
+    int epfd = epoll_create1(0);
+    struct epoll_event ev, events[MAX_EVENTS];
+    ev.events = EPOLLIN;
+    ev.data.fd = listen_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);
+
+    int conn_fd = -1;
+    while (1) {
+        int nfds = epoll_wait(epfd, events, MAX_EVENTS, -1);
+        for (int i = 0; i < nfds; ++i) {
+            if (events[i].data.fd == listen_fd) {
+                conn_fd = accept(listen_fd, NULL, NULL);
+                set_nonblocking(conn_fd);
+                ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                ev.data.fd = conn_fd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, conn_fd, &ev);
+                printf("客户端连接成功 fd=%d\n", conn_fd);
+            } else if (events[i].data.fd == conn_fd) {
+                char buf[1024] = {0};
+                int n = read(conn_fd, buf, sizeof(buf));
+                printf("第一次收到数据: %.*s\n", n, buf);
+
+                // 第二次epoll_wait，预期不会触发
+                printf("等待第二次数据（预期不会触发）...\n");
+                int nfds2 = epoll_wait(epfd, events, MAX_EVENTS, 30000);
+                if (nfds2 == 0) {
+                    printf("第二次epoll_wait未触发，oneshot验证成功 ✅\n");
+                } else {
+                    printf("第二次epoll_wait触发了事件，oneshot验证失败 ❌\n");
+                }
+
+                // 重新注册fd事件
+                ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                epoll_ctl(epfd, EPOLL_CTL_MOD, conn_fd, &ev);
+                printf("重新注册fd事件，等待第三次数据...\n");
+
+                // 第三次epoll_wait，客户端发数据后预期会触发
+                int nfds3 = epoll_wait(epfd, events, MAX_EVENTS, 5000);
+                if (nfds3 > 0) {
+                    n = read(conn_fd, buf, sizeof(buf));
+                    printf("第三次收到数据：%.*s，重新注册验证成功 ✅\n", n, buf);
+                } else {
+                    printf("第三次epoll_wait未触发，重新注册验证失败 ❌\n");
+                }
+                close(conn_fd);
+                return 0; // 测试结束
+            }
+        }
+    }
+}
+```
+
+然后我们用nc 命令测试这个服务器 ,  预期输入第一次数据，会读到。第二次发送，在30s里面，epoll_wait无法触发。结果如下所示：
+
+```
+# 服务端
+客户端连接成功 fd=5
+第一次收到数据: 66666
+等待第二次数据（预期不会触发）...
+# 客户端
+66666
+8888
+99999
+```
+
+所以oneshot和multishot影响的是epoll监控fd的行为，oneshot在触发一次之后，对应监控fd被移除，multishot会一直驻留。
 
 ### 小小的总结一下
 
@@ -839,7 +945,9 @@ io_uring支持三种工作模式:
 2.  轮询模式（IORING_SETUP_IOPOLL），通过轮询方式检测IO完成，延迟更低，但是会更消耗CPU，需要设备和文件系统支持轮询功能只适用于使用 O_DIRECT 标志打开的文件描述符。
 3.  内核轮询模式，通过 `IORING_SETUP_SQPOLL` 标志开启 ，创建内核线程轮询 SQ，减少系统调用开销允许应用程序无需切换到内核态即可提交 I/O 请求
 
-如果你觉得io_uring太繁琐，这里有一个liburing 的库，将io_uring封装的更加便捷，我们可以参考文档[17] 来学习io_uring的使用:
+如果你觉得io_uring太繁琐，这里有一个liburing 的库，将io_uring封装的更加便捷，我们可以参考文档[17] 来学习io_uring的使用，我这里准备了代码和示例图:
+
+![](https://a.a2k6.com/gerald/i/2025/02/28/47ix.png)
 
 ```c
 void server_loop(int server_socket) {
@@ -915,6 +1023,8 @@ int add_read_request(int client_socket) {
 由此就引出了io_uring， 操作系统总是根据应用软件的需求来引入特性，一般的非数据库应用软件添加的异步接口和数据库软件添加的异步接口，设计目标并不一致，数据库软件希望绕开缓存，但非数据库软件希望有效的利用缓存。尽管io_submit已经开始支持epoll，但扩展和维护都相当复杂。于是就引出了io_uring, io_uring的推出基于以下事实，随着设备越来越快，轮询开始快于中断。io_uring统一了网络io和磁盘io。这也就是最新的异步IO，这个异步可以体现在减少系统调用上，我们只用处理就绪的事件上，减少read和accept的系统调用次数。
 
 但是AIO还有另外一重语义，将你的回调函数传递给系统，当有事件发生的时候，系统调用你的回调函数。我们可以传递函数指针给操作系统，但是操作系统回调应用程序比较复杂，往往需要借助于中断，在设备越来越快的今天，轮询要比中断快，因此我们可以设计的底层调用是轮询形式，然后在包装成AIO的语义。
+
+这次梳理流程的时候，我们没有借助一些理所当然的类比，有些类比会把往我们引到沟里面。我选择的思路是直面底层的实现，力图寻找演变的动机，设计的动机。我们可以看到在梳理的这个过程中，我们澄清了一些概念，为了验证这些概念，我们不断的引入验证的工具。我们依据理论构建预测，然后验证。如果验证的符合了我们的预测，则说明我们的理解是有效的。当我们对一些理论有理解的时候，我们总可以做出一些预测，那就是最本质的东西，依据最本质的东西向前推导，我们会发现不会有什么本质性的困难。我们获得的理解也更深入。
 
 ## 参考资料
 
